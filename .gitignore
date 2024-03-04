@@ -1,0 +1,12 @@
+*.csv
+*.jsonl
+*.json
+__pycache__/
+*.pyc
+output/
+outputs/
+*.bin
+wandb/
+results/
+self-control/suffix_gradient/data/
+merged_eval_results/

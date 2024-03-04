@@ -1,0 +1,16 @@
+accelerate
+bitsandbytes
+datasets
+einops
+fairscale
+fasttext_langdetect
+fire
+gradio
+numpy
+pandas
+peft
+Requests
+sentencepiece
+setuptools
+tqdm
+transformers
