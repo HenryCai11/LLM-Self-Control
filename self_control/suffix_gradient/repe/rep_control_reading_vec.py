@@ -3,6 +3,8 @@ import torch
 import warnings
 import numpy as np
 
+from peft import PeftModel
+
 class WrappedBlock(torch.nn.Module):
     def __init__(self, block):
         super().__init__()
@@ -28,7 +30,6 @@ class WrappedBlock(torch.nn.Module):
 
             
         if self.controller is not None:
-        
             norm_pre = torch.norm(modified, dim=-1, keepdim=True)
 
             if self.mask is not None:
@@ -108,19 +109,105 @@ class WrappedBlock(torch.nn.Module):
 class WrappedReadingVecModel(torch.nn.Module):
     def __init__(self, model, tokenizer):
         super().__init__()
-        self.model = model
+        if isinstance(model, PeftModel):
+            self.model = model.base_model.model
+        else:
+            self.model = model
         self.tokenizer = tokenizer
         
     def forward(self, *args, **kwargs):
         return self.model(*args, **kwargs)
+    
+    def get_sentence_embedding(self, model, tokenizer, sentence):
+        sentence = sentence.strip().replace('"', "")
+        word_embeddings = model.get_input_embeddings()
+
+        # Embed the sentence
+        tokenized = tokenizer(sentence, return_tensors="pt", add_special_tokens=False).to(
+            model.device
+        )
+        embedded = word_embeddings(tokenized.input_ids)
+        return embedded
         
-    def generate(self, prompt, max_new_tokens=100, random_seed=0, use_cache=False):
-        with torch.no_grad():
-            torch.random.manual_seed(random_seed)
-            inputs = self.tokenizer(prompt, return_tensors="pt", padding=True, max_length=512, truncation=True)
-            attention_mask = inputs.attention_mask.to(self.model.device)
-            generate_ids = self.model.generate(inputs.input_ids.to(self.model.device), attention_mask=attention_mask, max_new_tokens=max_new_tokens, use_cache=use_cache)
-            return self.tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)
+    def generate(self, prompt, max_new_tokens=100, random_seed=0, use_cache=False, keep_input=False, **kwargs):
+        self.model.eval()
+        do_sample = False
+        temperature = kwargs.pop("temperature", None)
+        top_k = kwargs.pop("top_k", None)
+        top_p = kwargs.pop("top_p", None)
+        if temperature is not None or top_k is not None or top_p is not None:
+            do_sample = True
+            # print("Do Sampling!")
+            # if temperature is not None:
+            #     print("Temperature: ", temperature)
+            # if top_k is not None:
+            #     print("Top K: ", top_k)
+            # if top_p is not None:
+            #     print("Top P: ", top_p)
+        # with torch.no_grad():
+        torch.random.manual_seed(random_seed)
+        # inputs = self.tokenizer(prompt, return_tensors="pt")
+        # attention_mask = inputs.attention_mask.to(self.model.device)
+        ground_truth_embeds = self.get_sentence_embedding(
+            self.model, self.tokenizer, prompt
+        )
+        if temperature is not None:
+            temperature = np.round(temperature, 2)
+            ground_truth_generation = self.model.generate(
+                inputs_embeds=ground_truth_embeds,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                do_sample=True,
+                num_return_sequences=1,
+            )
+        elif top_k is not None:
+            ground_truth_generation = self.model.generate(
+                inputs_embeds=ground_truth_embeds,
+                max_new_tokens=max_new_tokens,
+                top_k=top_k,
+                do_sample=True,
+                num_return_sequences=1,
+            )
+        elif top_p is not None:
+            top_p = np.round(top_p, 2)
+            ground_truth_generation = self.model.generate(
+                inputs_embeds=ground_truth_embeds,
+                max_new_tokens=max_new_tokens,
+                top_p=top_p,
+                do_sample=True,
+                num_return_sequences=1,
+            )
+        else:
+            # print("No temperature or top_k or top_p is provided, using greedy decoding.")
+            ground_truth_generation = self.model.generate(
+                inputs_embeds=ground_truth_embeds,
+                max_new_tokens=max_new_tokens,
+                # top_p=top_p,
+                do_sample=False,
+                num_return_sequences=1,
+            )
+        if keep_input:
+            ground_truth_generation = self.tokenizer.batch_decode(
+                ground_truth_generation,
+                skip_special_tokens=True,
+            )
+            return prompt + ground_truth_generation[0]
+        else:
+            ground_truth_generation = self.tokenizer.batch_decode(
+                ground_truth_generation
+            )
+            return ground_truth_generation[0]
+        # generate_ids = self.model.generate(
+        #     input_ids=inputs.input_ids.to(self.model.device),
+        #     max_new_tokens=max_new_tokens,
+        #     use_cache=use_cache,
+        #     num_return_sequences=1,
+        #     temperature=temperature,
+        #     do_sample=do_sample,
+        #     top_k=top_k,
+        #     top_p=top_p,
+        # )
+        # return self.tokenizer.batch_decode(generate_ids)
         
     def controlled_generate_early_stop(self, prompt, target, max_new_tokens, random_seed=0, use_cache=True):
         """
