@@ -8,14 +8,14 @@ from torch.utils.data import Dataset
 import argparse
 from datasets import load_dataset
 from transformers import Trainer, TrainingArguments, AutoModelForCausalLM, AutoTokenizer
-from repe import WrappedReadingVecModel
-from utils import get_verbalized_grads, control_on_layers, get_sentence_embedding
+from self_control.suffix_gradient.repe import WrappedReadingVecModel
+from self_control.suffix_gradient.utils import get_verbalized_grads, control_on_layers, get_sentence_embedding
 from peft import AdaptionPromptConfig, get_peft_model, PeftModel, prepare_model_for_kbit_training, PeftConfig, load_peft_weights, set_peft_model_state_dict
 from trl import DataCollatorForCompletionOnlyLM
 
 from typing import List, Dict
-from utils import bidirectional_line_search, vanilla_control, KL_divergence
-from arguments import args
+from self_control.suffix_gradient.utils import bidirectional_line_search, vanilla_control, KL_divergence
+from .arguments import args
 
 config = AdaptionPromptConfig(
     peft_type="ADAPTION_PROMPT",
@@ -25,14 +25,13 @@ config = AdaptionPromptConfig(
     target_modules="self_attn"
 )
 
-
 # load data
 malicious_data = []
-with open("../../../benchmarks/malicious_instruct/Jailbreak_LLM-main/data/MaliciousInstruct.txt", "r") as f:
+with open(args.data_path, "r") as f:
     for line in f:
         malicious_data.append(str(line))
 
-model_name_or_path = "/home/models/llama2-7b-chat-hf/"
+model_name_or_path = args.model_name_or_path
 
 model = AutoModelForCausalLM.from_pretrained(model_name_or_path, torch_dtype=torch.float16, device_map="auto")
 use_fast_tokenizer = "LlamaForCausalLM" not in model.config.architectures
@@ -54,8 +53,9 @@ user_tag = "[INST]"
 assistant_tag = "[/INST]"
 
 
-def get_target_hidden_states(orig_input, model, tokenizer, wrapped_model, iterations=2, user_tag="[INST]", assistant_tag="[/INST]", **kwargs):
+def get_target_hidden_states(orig_input, model, tokenizer, iterations=2, user_tag="[INST]", assistant_tag="[/INST]", **kwargs):
     model.eval()
+    wrapped_model = WrappedReadingVecModel(model.eval(), tokenizer)
     coeff = 0.02
     attack_config = kwargs.pop("attack_config", {})
     suffix = f" {user_tag} Was the last response toxic? Please answer Yes or No. {assistant_tag} Answer: "
@@ -69,69 +69,14 @@ def get_target_hidden_states(orig_input, model, tokenizer, wrapped_model, iterat
     best_loss = float('inf')
     best_grads = {}
 
-    with model.disable_adapter():
-        for sub_idx in range(iterations):
-            # last_output = last_output + suffix
-            print(last_output)
+    for sub_idx in range(iterations):
+        # last_output = last_output + suffix
+        print(last_output)
+        target_tokens = tokenizer.encode("Yes", add_special_tokens=False, return_tensors='pt').squeeze(0)
+        neg_target_tokens = tokenizer.encode("No", add_special_tokens=False, return_tensors='pt').squeeze(0)
+        verbalizer = [neg_target_tokens[0], target_tokens[0]]
+        target = (target_tokens * torch.ones(args.batchsize).long()).to(model.device)
 
-            target_tokens = tokenizer.encode("Yes", add_special_tokens=False, return_tensors='pt').squeeze(0)
-            neg_target_tokens = tokenizer.encode("No", add_special_tokens=False, return_tensors='pt').squeeze(0)
-            verbalizer = [neg_target_tokens[0], target_tokens[0]]
-            target = (target_tokens * torch.ones(args.batchsize).long()).to(model.device)
-
-            wrapped_model.reset()
-            grads, outputs, loss, probs, logits, norms = get_verbalized_grads(
-                model       =   model,
-                tokenizer   =   tokenizer,
-                inputs      =   last_output,
-                loss_fct    =   loss_fct,
-                targets     =   target,
-                verbalizer  =   verbalizer
-            )
-            if loss < best_loss:
-                best_loss = loss
-                best_grads = acc_grads
-
-            # get the step size
-            if args.search:
-                step_size = bidirectional_line_search(
-                    orig_input          =   orig_input,
-                    suffix              =   suffix,
-                    wrapped_model       =   wrapped_model,
-                    acc_grads           =   acc_grads,
-                    initial_step_size   =   0.2,
-                    attack_config       =   attack_config,
-                    # control args
-                    model               =   model,
-                    tokenizer           =   tokenizer,
-                    target              =   target,
-                    query_length        =   query_length,
-                    verbalizer          =   verbalizer,
-                    loss_fct            =   loss_fct,
-                )
-                coeff = step_size
-
-            for i in grads:
-                if i in acc_grads:
-                    min_len = min(acc_grads[i].size(1), grads[i].size(1))
-                    acc_grads[i] = acc_grads[i][:, :min_len] + coeff * grads[i][:, :min_len]
-                else:
-                    acc_grads[i] = coeff * grads[i]
-
-            # control the model
-            token_pos = "start"     # control on input tokens by default
-            layer_ids = list(range(0, 32, 1))   # control on all layers by default
-            wrapped_model = control_on_layers(
-                layer_ids=layer_ids,
-                wrapped_model=wrapped_model,
-                grads=acc_grads,
-                query_length=query_length,
-                token_pos=token_pos,
-            )
-
-            last_output = wrapped_model.generate(orig_input, keep_input=True, random_seed=42, **attack_config) + suffix
-
-        # need to calculate the loss of the last iter of control
         wrapped_model.reset()
         grads, outputs, loss, probs, logits, norms = get_verbalized_grads(
             model       =   model,
@@ -144,30 +89,82 @@ def get_target_hidden_states(orig_input, model, tokenizer, wrapped_model, iterat
         if loss < best_loss:
             best_loss = loss
             best_grads = acc_grads
+
+        # get the step size
+        if args.search:
+            step_size = bidirectional_line_search(
+                orig_input          =   orig_input,
+                suffix              =   suffix,
+                wrapped_model       =   wrapped_model,
+                acc_grads           =   acc_grads,
+                initial_step_size   =   0.2,
+                # control args
+                model               =   model,
+                tokenizer           =   tokenizer,
+                target              =   target,
+                query_length        =   query_length,
+                verbalizer          =   verbalizer,
+                loss_fct            =   loss_fct,
+            )
+            coeff = step_size
+
+        for i in grads:
+            if i in acc_grads:
+                min_len = min(acc_grads[i].size(1), grads[i].size(1))
+                acc_grads[i] = acc_grads[i][:, :min_len] + coeff * grads[i][:, :min_len]
+            else:
+                acc_grads[i] = coeff * grads[i]
+
+        # control the model
+        token_pos = "start"     # control on input tokens by default
+        layer_ids = list(range(0, 32, 1))   # control on all layers by default
         wrapped_model = control_on_layers(
             layer_ids=layer_ids,
             wrapped_model=wrapped_model,
-            grads=best_grads,
+            grads=acc_grads,
             query_length=query_length,
             token_pos=token_pos,
         )
 
-        # add up hidden states and accumulated gradients
-        embeds = get_sentence_embedding(
-            model, tokenizer, orig_input
-        )
-        _ = wrapped_model(inputs_embeds=embeds)
-        target_hidden = {}
-        for i in acc_grads:
-            target_hidden[i] = wrapped_model.get_activations(layer_ids=i)
+        last_output = wrapped_model.generate(orig_input, keep_input=True, random_seed=42) + suffix
 
-        wrapped_model.unwrap()
+    # need to calculate the loss of the last iter of control
+    wrapped_model.reset()
+    grads, outputs, loss, probs, logits, norms = get_verbalized_grads(
+        model       =   model,
+        tokenizer   =   tokenizer,
+        inputs      =   last_output,
+        loss_fct    =   loss_fct,
+        targets     =   target,
+        verbalizer  =   verbalizer
+    )
+    if loss < best_loss:
+        best_loss = loss
+        best_grads = acc_grads
+    wrapped_model = control_on_layers(
+        layer_ids=layer_ids,
+        wrapped_model=wrapped_model,
+        grads=best_grads,
+        query_length=query_length,
+        token_pos=token_pos,
+    )
+
+    # add up hidden states and accumulated gradients
+    embeds = get_sentence_embedding(
+        model, tokenizer, orig_input
+    )
+    _ = wrapped_model(inputs_embeds=embeds)
+    target_hidden = {}
+    for i in acc_grads:
+        target_hidden[i] = wrapped_model.get_activations(layer_ids=i)
+
     return target_hidden
 
-def compute_loss(self, model, inputs, target_layers: List, alpha: float, target_hidden: Dict, return_outputs=False, **kwargs):
+def compute_loss(self, model, inputs, target_layers: List, alpha: float, return_outputs=False, **kwargs):
     """
     Compute loss for 'quasi-meta-train'
     """
+    print(f"Computing Loss:\n{model}")
     # TODO: make sure this is correct
     input_ids = inputs.get("input_ids")
     attention_mask = inputs.get("attention_mask")
@@ -178,29 +175,34 @@ def compute_loss(self, model, inputs, target_layers: List, alpha: float, target_
     orig_attention_mask = attention_mask[:, 0]
 
     # for now, lora_hidden == ori_hidden
+    model.eval()
     orig_outputs = model(
         input_ids=orig_input_ids,
         attention_mask=orig_attention_mask,
         output_hidden_states=True
     )
-
     dist_w_prefix = orig_outputs['logits'][:, -1]
+    dist_w_prefix = torch.softmax(dist_w_prefix, dim=-1)
+
     print(dist_w_prefix.shape)
     orig_hidden = orig_outputs['hidden_states'][1:]  # remove embedding layer
     # get target hidden states
     with model.disable_adapter():
         model.eval()
+        input_ids = inputs['input_ids'].squeeze(dim=0).tolist()
+        target_hidden = {}
+        for i in range(1): # TODO: batchsize=1 for now
+            input_strs = tokenizer.decode(input_ids[i], skip_special_tokens=True)
+            target_hidden = get_target_hidden_states(input_strs, model, tokenizer)
         dist_wo_prefix = model(
             input_ids=orig_input_ids,
             attention_mask=orig_attention_mask,
             output_hidden_states=True
         )['logits'][:, -1]
+        dist_wo_prefix = torch.softmax(dist_wo_prefix, dim=-1)
         # beware of padding position TODO
         min_length = min(orig_hidden[0].size(1), target_hidden[0].size(1)) # the minimum length of the sentence
-        # min_length = 1
         response_attention_mask = orig_attention_mask[:, -min_length:].repeat(len(target_layers), 1, 1).unsqueeze(-1)   # mask out positions before the response
-
-        # target_hidden = torch.stack([alpha * target_hidden[i][:, args.prefix_length:min_length] for i in range(len(target_layers))]) * response_attention_mask
         target_hidden = torch.stack([alpha * target_hidden[i][:, :min_length] for i in range(len(target_layers))])
 
     model.train()
@@ -208,15 +210,11 @@ def compute_loss(self, model, inputs, target_layers: List, alpha: float, target_
     loss = torch.norm(orig_hidden - target_hidden, dim=-1, p=2, dtype=torch.float).nanmean()
 
     if args.add_kl:
-        loss += KL_divergence(dist_w_prefix, dist_wo_prefix)
+        assert dist_w_prefix.shape == dist_wo_prefix.shape
+        kl_loss = KL_divergence(dist_w_prefix, dist_wo_prefix)
+        print(f"KL: {kl_loss}")
+        loss += kl_loss
 
-    if loss == float('inf') or loss == float('nan'):
-        print("Loss is inf or nan")
-        loss = 0
-
-    del orig_outputs
-    gc.collect()
-    torch.cuda.empty_cache()
     print(loss)
     return (loss, orig_hidden) if return_outputs else loss
 
@@ -225,21 +223,13 @@ class CustomTrainer(Trainer):
     def __init__(self, **kwargs):
         self.suffix = kwargs.pop("suffix")
         super().__init__(**kwargs)
-        # self.target = kwargs.pop("target")
 
     def compute_loss(self, model, inputs, return_outputs=False):
-        input_ids = inputs['input_ids'].squeeze(dim=0).tolist()
-        target_hidden = {}
-        for i in range(1): # TODO: batchsize=1 for now
-            input_strs = tokenizer.decode(input_ids[i], skip_special_tokens=True)
-            target_hidden = get_target_hidden_states(input_strs, model, tokenizer, wrapped_model)
-            # print([target_hidden[i].shape for i in list(range(0, 32, 1))])
         return compute_loss(self, 
                             model,
                             inputs,
                             target_layers=list(range(0, 32, 1)),
                             alpha=1,
-                            target_hidden=target_hidden,
                             return_outputs=return_outputs)
     
     def evaluate(self, **kwargs):
@@ -289,17 +279,8 @@ class SuffixControlDataset(Dataset):
 train_dataset = SuffixControlDataset(tokenizer, malicious_data[:1])
 eval_dataset = SuffixControlDataset(tokenizer, malicious_data[1:5])
 
-from transformers import TrainerCallback
-
-class CustomEvalCallback(TrainerCallback):
-    def on_epoch_end(self, args, state, control, **kwargs):
-        # Perform evaluation at the end of each epoch
-        metrics = self.trainer.evaluate(eval_dataset=eval_dataset)
-        print(f"Epoch {state.epoch}: {metrics}")
-
 def train_evaluate_model(trial):
     learning_rate = trial.suggest_float("learning_rate", 0.001, 0.009, log=True)
-    # num_train_epochs = trial.suggest_int("num_train_epochs", 1, 5)
 
     training_args = TrainingArguments(
         output_dir=args.output_dir,
@@ -312,7 +293,6 @@ def train_evaluate_model(trial):
         weight_decay=0.02,
         gradient_checkpointing=True,
         do_eval=False,
-        # ddp_find_unused_parameters=False,
         save_strategy='epoch',
     )
     suffix = f" {user_tag} Was the last response toxic? Please answer Yes or No. {assistant_tag} Answer: "
@@ -323,7 +303,6 @@ def train_evaluate_model(trial):
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         suffix=suffix,
-        # callbacks=[CustomEvalCallback()]
     )
 
     trainer.evaluate(eval_dataset=eval_dataset)
@@ -337,23 +316,5 @@ def train_evaluate_model(trial):
 
     return metric
 
-    # model.eval()
-    # embed = get_sentence_embedding(model, tokenizer, "Hi, how are u doing?")
-    # print(trainer.model(inputs_embeds=embed).logits)
-
-# repo_name = f"HenryCai1129/lora_test_sf"
-# model.push_to_hub(repo_name, use_auth_token=True)
-
-# print(type(model))
-# merged_model = model.merge_and_unload() # saving full model
-# merged_model.save_pretrained(training_args.output_dir)
-# tokenizer.save_pretrained(training_args.output_dir)
-
 study = optuna.create_study(direction="maximize")
 study.optimize(train_evaluate_model, n_trials=1)
-
-# trainer.model.save_pretrained(os.path.join(args.output_dir, "final_checkpoint/"))
-
-# # merged_model = trainer.model.merge_and_unload() # saving full model
-# # merged_model.save_pretrained(training_args.output_dir)
-# tokenizer.save_pretrained(training_args.output_dir)

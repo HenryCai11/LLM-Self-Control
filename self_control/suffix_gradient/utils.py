@@ -2,7 +2,7 @@ import torch
 from typing import List, Dict, Tuple
 from scipy.special import softmax
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from repe import WrappedReadingVecModel
+from self_control.suffix_gradient.repe import WrappedReadingVecModel
 
 def loss_over_multiple_next_tokens(model, inputs, loss_fct, targets):
     """
@@ -319,7 +319,6 @@ def bidirectional_line_search(orig_input: str,
                                 loss_threshold: float=1e-5,
                                 max_iterations: int=5,
                                 scale_factor: float=0.5,
-                                attack_config: Dict={},
                                 **control_args
                                 ) -> float:
     """
@@ -350,7 +349,7 @@ def bidirectional_line_search(orig_input: str,
     best_step_size = initial_step_size
     current_step_size = initial_step_size
     
-    input_with_suffix = wrapped_model.generate(orig_input, keep_input=True, random_seed=42, **attack_config) + suffix
+    input_with_suffix = wrapped_model.generate(orig_input, keep_input=True, random_seed=42) + suffix
     grads, outputs, loss, probs, logits, norms = get_verbalized_grads(
         inputs=input_with_suffix,
         model=model,
@@ -387,7 +386,7 @@ def bidirectional_line_search(orig_input: str,
                 query_length=query_length,
                 token_pos=token_pos,
             )
-            input_with_suffix = wrapped_model.generate(orig_input, keep_input=True, random_seed=42, **attack_config) + suffix
+            input_with_suffix = wrapped_model.generate(orig_input, keep_input=True, random_seed=42) + suffix
             _, outputs, loss, probs, logits, norms = get_verbalized_grads(
                 inputs=input_with_suffix,
                 model=model,
@@ -414,7 +413,7 @@ def bidirectional_line_search(orig_input: str,
     return best_step_size
 
 
-def KL_divergence(self, p, q):
+def KL_divergence(p, q, epsilon=1e-12):
     """Compuates KL divergence between two probability distributions
 
     Args:
@@ -424,4 +423,4 @@ def KL_divergence(self, p, q):
     Returns:
         float: KL divergence
     """
-    return torch.sum(p * torch.log((p + self.epsilon) / (q + self.epsilon)))
+    return torch.sum(p * torch.log((p + epsilon) / (q + epsilon)))
