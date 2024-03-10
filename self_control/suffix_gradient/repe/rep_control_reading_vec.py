@@ -2,9 +2,9 @@
 import torch
 import warnings
 import numpy as np
-from self_control.suffix_gradient.utils import get_sentence_embedding, get_verbalized_grads_from_wrapped_model, control_on_layers, label_smoothing
+from self_control.suffix_gradient.utils import get_sentence_embedding, get_verbalized_grads_from_wrapped_model, control_on_layers, label_smoothing, bidirectional_line_search, SuffixItem
 from scipy.special import softmax
-
+from typing import Union, List
 from peft import PeftModel
 
 class WrappedBlock(torch.nn.Module):
@@ -120,21 +120,38 @@ class WrappedReadingVecModel(torch.nn.Module):
     def forward(self, *args, **kwargs):
         return self.model(*args, **kwargs)
     
-    # def get_sentence_embedding(self, model, tokenizer, sentence):
-    #     # sentence = sentence.strip().replace('"', "")
-    #     word_embeddings = model.get_input_embeddings()
+    def control_on_layers(self, layer_ids, grads, query_length, token_pos="start") -> None:
+        """
+        Control the activations of the model on the specified layers.
+        """
+        self.unwrap()
 
-    #     # Embed the sentence
-    #     tokenized = tokenizer(sentence, return_tensors="pt", add_special_tokens=False).to(
-    #         model.device
-    #     )
-    #     embedded = word_embeddings(tokenized.input_ids)
-    #     return embedded
+        block_name="decoder_block"
+
+        self.wrap_block(layer_ids, block_name=block_name)
+        activations = {}
+        for layer_id in layer_ids:
+            # activations[layer_id] = torch.tensor(coeff * grads[layer_id]).to(model.device).half()
+            if isinstance(token_pos, str):
+                if token_pos == "start":
+                    activations[layer_id] = grads[layer_id][:, :query_length, :]
+                elif token_pos == "full":
+                    activations[layer_id] = grads[layer_id][:, :, :]
+                    token_pos = "start"
+                elif token_pos == "end":
+                    activations[layer_id] = grads[layer_id][:, -query_length:, :]
+            elif isinstance(token_pos, int):
+                activations[layer_id] = grads[layer_id][:, token_pos, :].unsqueeze(dim=1)
+            elif isinstance(token_pos, list):
+                print("using list")
+                activations[layer_id] = grads[layer_id][:, :, :]
+
+            self.set_controller(layer_id, activations[layer_id], token_pos=token_pos, masks=1, normalize=False)
+
 
     def controlled_generate(self,
                             prompt="",
-                            suffix="",
-                            target: str="",
+                            suffix: Union[SuffixItem, List[SuffixItem]]=None,
                             loss_fct=None,
                             verbalizer=None,
                             coeff=-0.1,
@@ -146,68 +163,124 @@ class WrappedReadingVecModel(torch.nn.Module):
                             consistent=True,
                             use_cache=False,
                             keep_input=False,
-                            **kwargs
+                            smoothing: float = 0.5,
+                            search=False,
+                            **kwargs    # for the generate function
                             ):
         self.model.eval()
         self.reset()
+        best_loss = float('inf')
         torch.random.manual_seed(random_seed)
         acc_grads = {}  # accumulated gradients
+        best_grads = {}
         gradient_bs = 1 # TODO: default to 1
-        controlled_output = self.generate(prompt, keep_input=True, random_seed=42, **kwargs)
+
+        controlled_output = self.generate(prompt, keep_input=True, random_seed=42, **kwargs) # the original output
         ori_inputs = self.tokenizer.encode(prompt, add_special_tokens=False)
         assert isinstance(ori_inputs, list)
         query_length = len(ori_inputs)
-
-        target_token = self.tokenizer.encode(target, add_special_tokens=False, return_tensors='pt').squeeze(0)
-        assert target_token.shape[-1] == 1, "Target should be a single token for now."
-        target_token = (target_token * torch.ones(gradient_bs).long()).to(self.model.device)
-        verbalizer = [target_token[0]]
 
         for iter in range(iterations):
             # print(controlled_output)
             controlled_output = controlled_output + suffix
             # rationale = self.generate(controlled_output, keep_input=True, random_seed=42)
             # print("Rationale:\n", rationale)
-            grads, outputs, loss, probs, logits, norms = get_verbalized_grads_from_wrapped_model(
-                wrapped_model=self,
-                tokenizer=self.tokenizer,
-                inputs=controlled_output,
-                loss_fct=loss_fct,
-                targets=target_token,
-                verbalizer=verbalizer
-            )
+
+            if isinstance(suffix, list):
+                composed_grads = {}
+                for suffix_item in suffix:
+                    target = suffix_item.target
+                    target_token = self.tokenizer.encode(target, add_special_tokens=False, return_tensors='pt').squeeze(0)
+                    assert target_token.shape[-1] == 1, "Target should be a single token for now."
+                    target_token = (target_token * torch.ones(gradient_bs).long()).to(self.model.device)
+                    verbalizer = [target_token[0]]
+                    grads, outputs, loss, probs, logits, norms = get_verbalized_grads_from_wrapped_model(
+                        wrapped_model=self,
+                        tokenizer=self.tokenizer,
+                        inputs=controlled_output,
+                        loss_fct=loss_fct,
+                        targets=target_token,
+                        verbalizer=verbalizer,
+                        smoothing=smoothing,
+                    )
+                    composed_grads = {k: (composed_grads[k] + grads[k] * suffix_item.direction) if k in composed_grads else grads[k]\
+                                       for k in set(grads)}
+                grads = composed_grads
+                del composed_grads
+            else:
+                target = suffix.target
+                target_token = self.tokenizer.encode(target, add_special_tokens=False, return_tensors='pt').squeeze(0)
+                assert target_token.shape[-1] == 1, "Target should be a single token for now."
+                target_token = (target_token * torch.ones(gradient_bs).long()).to(self.model.device)
+                verbalizer = [target_token[0]]
+                grads, outputs, loss, probs, logits, norms = get_verbalized_grads_from_wrapped_model(
+                    wrapped_model=self,
+                    tokenizer=self.tokenizer,
+                    inputs=controlled_output,
+                    loss_fct=loss_fct,
+                    targets=target_token,
+                    verbalizer=verbalizer,
+                    smoothing=smoothing,
+                )
+
+            if loss < best_loss:
+                best_loss = loss
+                best_grads = acc_grads
+
+            if search:
+                step_size = bidirectional_line_search(
+                    orig_input          =   prompt,
+                    suffix              =   suffix,
+                    wrapped_model       =   self,
+                    acc_grads           =   acc_grads,
+                    initial_step_size   =   0.2,
+                    # control args
+                    model               =   self.model,
+                    tokenizer           =   self.tokenizer,
+                    target              =   target,
+                    query_length        =   query_length,
+                    verbalizer          =   verbalizer,
+                    loss_fct            =   loss_fct,
+                )
+                coeff = step_size
 
             for i in grads:
                 if i in acc_grads:
                     acc_grads[i] = acc_grads[i][:, :query_length] + coeff * grads[i][:, :query_length]
                 else:
                     acc_grads[i] = coeff * grads[i][:, :query_length]
+                    
+            self.control_on_layers(
+                layer_ids=layer_ids,
+                grads=acc_grads,
+                query_length=query_length,
+                token_pos=token_pos,
+            )
 
-            self.unwrap()
-
-            block_name="decoder_block"
-
-            self.wrap_block(layer_ids, block_name=block_name)
-            activations = {}
-            for layer_id in layer_ids:
-                if isinstance(token_pos, str):
-                    if token_pos == "start":
-                        activations[layer_id] = acc_grads[layer_id][:, :query_length, :]
-                    elif token_pos == "full":
-                        activations[layer_id] = acc_grads[layer_id][:, :, :]
-                        token_pos = "start"
-                    if token_pos == "end":
-                        activations[layer_id] = acc_grads[layer_id][:, -query_length:, :]
-                elif isinstance(token_pos, int):
-                    activations[layer_id] = acc_grads[layer_id][:, token_pos, :].unsqueeze(dim=1)
-                elif isinstance(token_pos, list):
-                    print("using list")
-                    activations[layer_id] = acc_grads[layer_id][:, :, :]
-
-                self.set_controller(layer_id, activations[layer_id], token_pos=token_pos, masks=1, normalize=False)
             controlled_output = self.generate(prompt, keep_input=True, random_seed=42, **kwargs)
             if not consistent:
                 self.reset()
+
+        controlled_output = controlled_output + suffix
+        grads, outputs, loss, probs, logits, norms = get_verbalized_grads_from_wrapped_model(
+            wrapped_model=self,
+            tokenizer=self.tokenizer,
+            inputs=controlled_output,
+            loss_fct=loss_fct,
+            targets=target_token,
+            verbalizer=verbalizer,
+            smoothing=smoothing,
+        )
+        if loss < best_loss:
+            best_loss = loss
+            best_grads = acc_grads
+        self.control_on_layers(
+            layer_ids=layer_ids,
+            grads=best_grads,
+            query_length=query_length,
+            token_pos=token_pos,
+        )
+        controlled_output = self.generate(prompt, keep_input=True, random_seed=42, **kwargs)
         return controlled_output
 
         

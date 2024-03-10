@@ -360,7 +360,7 @@ def bidirectional_line_search(orig_input: str,
                                 acc_grads: Dict={},
                                 initial_step_size: float=0.1,
                                 loss_threshold: float=1e-5,
-                                max_iterations: int=5,
+                                max_iterations: int=3,
                                 scale_factor: float=0.5,
                                 **control_args
                                 ) -> float:
