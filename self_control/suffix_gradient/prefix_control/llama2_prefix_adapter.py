@@ -203,7 +203,7 @@ def compute_loss(self, model, inputs, target_layers: List, alpha: float, return_
         # beware of padding position TODO
         min_length = min(orig_hidden[0].size(1), target_hidden[0].size(1)) # the minimum length of the sentence
         response_attention_mask = orig_attention_mask[:, -min_length:].repeat(len(target_layers), 1, 1).unsqueeze(-1)   # mask out positions before the response
-        target_hidden = torch.stack([alpha * target_hidden[i][:, :min_length] for i in range(len(target_layers))])
+        target_hidden = torch.stack([target_hidden[i][:, :min_length] for i in range(len(target_layers))])
 
     model.train()
     orig_hidden = torch.stack([orig_hidden[l][:, :min_length].detach() for l in target_layers])

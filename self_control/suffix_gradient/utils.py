@@ -216,7 +216,7 @@ def control_on_layers(layer_ids, wrapped_model, grads, query_length, token_pos="
             elif token_pos == "full":
                 activations[layer_id] = grads[layer_id][:, :, :]
                 token_pos = "start"
-            if token_pos == "end":
+            elif token_pos == "end":
                 activations[layer_id] = grads[layer_id][:, -query_length:, :]
         elif isinstance(token_pos, int):
             activations[layer_id] = grads[layer_id][:, token_pos, :].unsqueeze(dim=1)
