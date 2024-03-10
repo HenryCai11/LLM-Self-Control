@@ -2,6 +2,8 @@
 import torch
 import warnings
 import numpy as np
+from self_control.suffix_gradient.utils import get_sentence_embedding, get_verbalized_grads_from_wrapped_model, control_on_layers, label_smoothing
+from scipy.special import softmax
 
 from peft import PeftModel
 
@@ -118,16 +120,96 @@ class WrappedReadingVecModel(torch.nn.Module):
     def forward(self, *args, **kwargs):
         return self.model(*args, **kwargs)
     
-    def get_sentence_embedding(self, model, tokenizer, sentence):
-        sentence = sentence.strip().replace('"', "")
-        word_embeddings = model.get_input_embeddings()
+    # def get_sentence_embedding(self, model, tokenizer, sentence):
+    #     # sentence = sentence.strip().replace('"', "")
+    #     word_embeddings = model.get_input_embeddings()
 
-        # Embed the sentence
-        tokenized = tokenizer(sentence, return_tensors="pt", add_special_tokens=False).to(
-            model.device
-        )
-        embedded = word_embeddings(tokenized.input_ids)
-        return embedded
+    #     # Embed the sentence
+    #     tokenized = tokenizer(sentence, return_tensors="pt", add_special_tokens=False).to(
+    #         model.device
+    #     )
+    #     embedded = word_embeddings(tokenized.input_ids)
+    #     return embedded
+
+    def controlled_generate(self,
+                            prompt="",
+                            suffix="",
+                            target: str="",
+                            loss_fct=None,
+                            verbalizer=None,
+                            coeff=-0.1,
+                            iterations=5,
+                            token_pos="start",
+                            layer_ids=list(range(0, 32, 1)),
+                            max_new_tokens=100,
+                            random_seed=0,
+                            consistent=True,
+                            use_cache=False,
+                            keep_input=False,
+                            **kwargs
+                            ):
+        self.model.eval()
+        self.reset()
+        torch.random.manual_seed(random_seed)
+        acc_grads = {}  # accumulated gradients
+        gradient_bs = 1 # TODO: default to 1
+        controlled_output = self.generate(prompt, keep_input=True, random_seed=42, **kwargs)
+        ori_inputs = self.tokenizer.encode(prompt, add_special_tokens=False)
+        assert isinstance(ori_inputs, list)
+        query_length = len(ori_inputs)
+
+        target_token = self.tokenizer.encode(target, add_special_tokens=False, return_tensors='pt').squeeze(0)
+        assert target_token.shape[-1] == 1, "Target should be a single token for now."
+        target_token = (target_token * torch.ones(gradient_bs).long()).to(self.model.device)
+        verbalizer = [target_token[0]]
+
+        for iter in range(iterations):
+            # print(controlled_output)
+            controlled_output = controlled_output + suffix
+            # rationale = self.generate(controlled_output, keep_input=True, random_seed=42)
+            # print("Rationale:\n", rationale)
+            grads, outputs, loss, probs, logits, norms = get_verbalized_grads_from_wrapped_model(
+                wrapped_model=self,
+                tokenizer=self.tokenizer,
+                inputs=controlled_output,
+                loss_fct=loss_fct,
+                targets=target_token,
+                verbalizer=verbalizer
+            )
+
+            for i in grads:
+                if i in acc_grads:
+                    acc_grads[i] = acc_grads[i][:, :query_length] + coeff * grads[i][:, :query_length]
+                else:
+                    acc_grads[i] = coeff * grads[i][:, :query_length]
+
+            self.unwrap()
+
+            block_name="decoder_block"
+
+            self.wrap_block(layer_ids, block_name=block_name)
+            activations = {}
+            for layer_id in layer_ids:
+                if isinstance(token_pos, str):
+                    if token_pos == "start":
+                        activations[layer_id] = acc_grads[layer_id][:, :query_length, :]
+                    elif token_pos == "full":
+                        activations[layer_id] = acc_grads[layer_id][:, :, :]
+                        token_pos = "start"
+                    if token_pos == "end":
+                        activations[layer_id] = acc_grads[layer_id][:, -query_length:, :]
+                elif isinstance(token_pos, int):
+                    activations[layer_id] = acc_grads[layer_id][:, token_pos, :].unsqueeze(dim=1)
+                elif isinstance(token_pos, list):
+                    print("using list")
+                    activations[layer_id] = acc_grads[layer_id][:, :, :]
+
+                self.set_controller(layer_id, activations[layer_id], token_pos=token_pos, masks=1, normalize=False)
+            controlled_output = self.generate(prompt, keep_input=True, random_seed=42, **kwargs)
+            if not consistent:
+                self.reset()
+        return controlled_output
+
         
     def generate(self, prompt, max_new_tokens=100, random_seed=0, use_cache=False, keep_input=False, **kwargs):
         self.model.eval()
@@ -148,7 +230,7 @@ class WrappedReadingVecModel(torch.nn.Module):
         torch.random.manual_seed(random_seed)
         # inputs = self.tokenizer(prompt, return_tensors="pt")
         # attention_mask = inputs.attention_mask.to(self.model.device)
-        ground_truth_embeds = self.get_sentence_embedding(
+        ground_truth_embeds = get_sentence_embedding(
             self.model, self.tokenizer, prompt
         )
         if temperature is not None:

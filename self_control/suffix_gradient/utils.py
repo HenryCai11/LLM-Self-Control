@@ -2,7 +2,7 @@ import torch
 from typing import List, Dict, Tuple
 from scipy.special import softmax
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from self_control.suffix_gradient.repe import WrappedReadingVecModel
+# from self_control.suffix_gradient.repe import WrappedReadingVecModel
 
 def loss_over_multiple_next_tokens(model, inputs, loss_fct, targets):
     """
@@ -110,11 +110,53 @@ def get_sentence_embedding(model, tokenizer, sentence):
     word_embeddings = model.get_input_embeddings()
 
     # Embed the sentence
-    tokenized = tokenizer(sentence, return_tensors="pt", add_special_tokens=True).to(
+    tokenized = tokenizer(sentence, return_tensors="pt", add_special_tokens=False).to(
         model.device
     )
     embedded = word_embeddings(tokenized.input_ids)
     return embedded
+
+def get_verbalized_grads_from_wrapped_model(wrapped_model, tokenizer, inputs: str, loss_fct, targets, verbalizer: List[int], smoothing=0.5):
+    """
+    Calculate cross entropy loss over a subset of the vocabulary.
+
+    Args:
+    - logits (torch.Tensor): The predicted logits from the model.
+    - targets (torch.Tensor): The target labels.
+    - subset_indices (list): List of indices representing the subset of the vocabulary.
+
+    Returns:
+    - torch.Tensor: The cross entropy loss.
+    """
+    torch.random.manual_seed(0)
+    ground_truth_embeds = get_sentence_embedding(
+        wrapped_model.model, tokenizer, inputs
+    )
+    outputs = wrapped_model(
+        inputs_embeds=ground_truth_embeds,
+        # input_ids=inputs["input_ids"],
+        # attention_mask=inputs["attention_mask"],
+        output_hidden_states=True,
+    )
+    one_hot_dist = torch.zeros(1, outputs.logits.shape[-1])
+    one_hot_dist[0, targets[0].cpu().numpy()] = 1
+    one_hot_dist = label_smoothing(one_hot_dist, smoothing=smoothing)
+    loss = loss_fct(outputs.logits[:, -1, :], one_hot_dist.to(wrapped_model.model.device))
+
+    grads = {}
+    norms = {}
+    hidden_states = outputs.hidden_states[1:] # outputs.hidden_states[0] is the embedding layer
+    for i in range(len(hidden_states)):
+        grads[i] = torch.autograd.grad(loss, hidden_states[i], retain_graph=True, allow_unused=True)[0].detach()
+        norms[i] = torch.norm(grads[i], dim=-1, keepdim=True)
+        norm_mask = norms[i] <= 1
+        norms[i][norm_mask] = 1
+        grads[i] = grads[i] / norms[i]
+
+    probs = softmax(outputs.logits[:, -1, verbalizer].detach().cpu().numpy()[0])
+    logits = outputs.logits
+
+    return grads, outputs, loss, probs, logits, norms
 
 def get_verbalized_grads(model, tokenizer, inputs: str, loss_fct, targets, verbalizer: List[int]):
     """
@@ -128,6 +170,7 @@ def get_verbalized_grads(model, tokenizer, inputs: str, loss_fct, targets, verba
     Returns:
     - torch.Tensor: The cross entropy loss.
     """
+    torch.random.manual_seed(0)
     ground_truth_embeds = get_sentence_embedding(
         model, tokenizer, inputs
     )
@@ -261,7 +304,7 @@ def get_dual_grads(model, tokenizer, input_list: List[str], loss_fct, verbalizer
 
 def vanilla_control(model: AutoModelForCausalLM,
                     tokenizer: AutoTokenizer,
-                    wrapped_model: WrappedReadingVecModel,
+                    wrapped_model,
                     inputs: str,
                     target: torch.Tensor,
                     query_length: int,
@@ -313,7 +356,7 @@ def vanilla_control(model: AutoModelForCausalLM,
 
 def bidirectional_line_search(orig_input: str,
                                 suffix: str,
-                                wrapped_model: WrappedReadingVecModel,
+                                wrapped_model,
                                 acc_grads: Dict={},
                                 initial_step_size: float=0.1,
                                 loss_threshold: float=1e-5,
@@ -424,3 +467,19 @@ def KL_divergence(p, q, epsilon=1e-12):
         float: KL divergence
     """
     return torch.sum(p * torch.log((p + epsilon) / (q + epsilon)))
+
+
+def label_smoothing(one_hot_labels, smoothing=0.5):
+    """
+    Applies label smoothing to one-hot labels.
+
+    Args:
+        one_hot_labels (np.ndarray): One-hot encoded labels with shape (batch_size, num_classes).
+        smoothing (float): Smoothing factor between 0 and 1.
+
+    Returns:
+        np.ndarray: Smoothed labels.
+    """
+    num_classes = one_hot_labels.shape[1]
+    smooth_labels = (1.0 - smoothing) * one_hot_labels + (smoothing / num_classes)
+    return smooth_labels
