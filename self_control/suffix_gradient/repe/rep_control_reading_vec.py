@@ -2,7 +2,8 @@
 import torch
 import warnings
 import numpy as np
-from self_control.suffix_gradient.utils import get_sentence_embedding, get_verbalized_grads_from_wrapped_model, control_on_layers, label_smoothing, bidirectional_line_search, SuffixItem
+from self_control.suffix_gradient.utils import get_sentence_embedding, get_verbalized_grads_from_wrapped_model, control_on_layers, label_smoothing, bidirectional_line_search
+from self_control.suffix_gradient.utils.suffix_manager import SuffixItem
 from scipy.special import softmax
 from typing import Union, List
 from peft import PeftModel
@@ -85,7 +86,8 @@ class WrappedBlock(torch.nn.Module):
             if self.normalize:
                 norm_post = torch.norm(modified, dim=-1, keepdim=True)
                 modified = modified / norm_post * norm_pre
-            
+        
+        # modified = torch.clamp(modified, output[0]-0.1, output[0]+0.1)
         if isinstance(output, tuple):
             output = (modified,) + output[1:] 
         else:
@@ -120,7 +122,14 @@ class WrappedReadingVecModel(torch.nn.Module):
     def forward(self, *args, **kwargs):
         return self.model(*args, **kwargs)
     
-    def control_on_layers(self, layer_ids, grads, query_length, token_pos="start") -> None:
+    def control_on_layers(self,
+                        layer_ids,
+                        grads,
+                        query_length,
+                        token_pos="start",
+                        gradient_manipulation: str="clipping",
+                        epsilon: float=0.3
+                        ) -> None:
         """
         Control the activations of the model on the specified layers.
         """
@@ -158,31 +167,42 @@ class WrappedReadingVecModel(torch.nn.Module):
                             iterations=5,
                             token_pos="start",
                             layer_ids=list(range(0, 32, 1)),
-                            max_new_tokens=100,
                             random_seed=0,
                             consistent=True,
+                            use_last=False,
                             use_cache=False,
                             keep_input=False,
                             smoothing: float = 0.5,
                             search=False,
+                            verbose=False,
+                            gradient_manipulation="clipping",
+                            return_intermediate=False,
+                            epsilon=0.3,
+                            annealing: float=None,
                             **kwargs    # for the generate function
                             ):
         self.model.eval()
         self.reset()
         best_loss = float('inf')
-        torch.random.manual_seed(random_seed)
         acc_grads = {}  # accumulated gradients
         best_grads = {}
         gradient_bs = 1 # TODO: default to 1
+        if return_intermediate:
+            iterative_outputs = []
 
         controlled_output = self.generate(prompt, keep_input=True, random_seed=42, **kwargs) # the original output
+        if verbose:
+            print("Original Output:\n", controlled_output)
+            rationale = self.generate(controlled_output+suffix.suffix, keep_input=False, random_seed=42, **kwargs)
+            print("Rationale:\n", rationale)
+            print("="*50)
         ori_inputs = self.tokenizer.encode(prompt, add_special_tokens=False)
         assert isinstance(ori_inputs, list)
         query_length = len(ori_inputs)
 
         for iter in range(iterations):
             # print(controlled_output)
-            controlled_output = controlled_output + suffix
+            controlled_output = controlled_output + suffix.suffix
             # rationale = self.generate(controlled_output, keep_input=True, random_seed=42)
             # print("Rationale:\n", rationale)
 
@@ -221,6 +241,7 @@ class WrappedReadingVecModel(torch.nn.Module):
                     targets=target_token,
                     verbalizer=verbalizer,
                     smoothing=smoothing,
+                    gradient_manipulation=gradient_manipulation,
                 )
 
             if loss < best_loss:
@@ -230,14 +251,14 @@ class WrappedReadingVecModel(torch.nn.Module):
             if search:
                 step_size = bidirectional_line_search(
                     orig_input          =   prompt,
-                    suffix              =   suffix,
+                    suffix              =   suffix.suffix,
                     wrapped_model       =   self,
                     acc_grads           =   acc_grads,
                     initial_step_size   =   0.2,
                     # control args
                     model               =   self.model,
                     tokenizer           =   self.tokenizer,
-                    target              =   target,
+                    target              =   target_token,
                     query_length        =   query_length,
                     verbalizer          =   verbalizer,
                     loss_fct            =   loss_fct,
@@ -245,23 +266,40 @@ class WrappedReadingVecModel(torch.nn.Module):
                 coeff = step_size
 
             for i in grads:
-                if i in acc_grads:
-                    acc_grads[i] = acc_grads[i][:, :query_length] + coeff * grads[i][:, :query_length]
+                if annealing is None:
+                    if i in acc_grads:
+                        acc_grads[i] = acc_grads[i][:, :query_length] + coeff * grads[i][:, :query_length]
+                    else:
+                        acc_grads[i] = coeff * grads[i][:, :query_length]
                 else:
-                    acc_grads[i] = coeff * grads[i][:, :query_length]
+                    if consistent:
+                        warnings.warn("annealing != None and consistent=True may not be compatible. Please make sure you are aware of this.")
+                    if i in acc_grads:
+                        acc_grads[i] = acc_grads[i][:, :query_length] * annealing + coeff * grads[i][:, :query_length]
+                    else:
+                        acc_grads[i] = coeff * grads[i][:, :query_length]
                     
             self.control_on_layers(
                 layer_ids=layer_ids,
                 grads=acc_grads,
                 query_length=query_length,
                 token_pos=token_pos,
+                gradient_manipulation=gradient_manipulation,
+                epsilon=epsilon
             )
 
             controlled_output = self.generate(prompt, keep_input=True, random_seed=42, **kwargs)
             if not consistent:
                 self.reset()
-
-        controlled_output = controlled_output + suffix
+            if verbose:
+                print(f"Loss from the iteration {iter}: {loss.item()}")
+                print(f"Output form the iteration {iter}:\n", controlled_output)
+                rationale = self.generate(controlled_output+suffix.suffix, keep_input=False, random_seed=42, **kwargs)
+                print("Rationale:\n", rationale)
+                print("="*50)
+            if return_intermediate:
+                iterative_outputs.append(controlled_output)
+        controlled_output = controlled_output + suffix.suffix
         grads, outputs, loss, probs, logits, norms = get_verbalized_grads_from_wrapped_model(
             wrapped_model=self,
             tokenizer=self.tokenizer,
@@ -281,7 +319,10 @@ class WrappedReadingVecModel(torch.nn.Module):
             token_pos=token_pos,
         )
         controlled_output = self.generate(prompt, keep_input=True, random_seed=42, **kwargs)
-        return controlled_output
+        if return_intermediate:
+            return controlled_output, iterative_outputs
+        else:
+            return controlled_output
 
         
     def generate(self, prompt, max_new_tokens=100, random_seed=0, use_cache=False, keep_input=False, **kwargs):

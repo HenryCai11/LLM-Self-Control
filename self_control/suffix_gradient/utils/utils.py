@@ -1,5 +1,8 @@
 import torch
+from torch.autograd import Variable
+import torch.optim as optim
 from typing import List, Dict, Tuple
+from copy import deepcopy
 from scipy.special import softmax
 from transformers import AutoModelForCausalLM, AutoTokenizer
 # from self_control.suffix_gradient.repe import WrappedReadingVecModel
@@ -116,7 +119,15 @@ def get_sentence_embedding(model, tokenizer, sentence):
     embedded = word_embeddings(tokenized.input_ids)
     return embedded
 
-def get_verbalized_grads_from_wrapped_model(wrapped_model, tokenizer, inputs: str, loss_fct, targets, verbalizer: List[int], smoothing=0.5):
+def get_verbalized_grads_from_wrapped_model(wrapped_model,
+                                            tokenizer,
+                                            inputs: str,
+                                            loss_fct,
+                                            targets,
+                                            verbalizer: List[int],
+                                            smoothing=0.5,
+                                            gradient_manipulation: str="clipping"
+                                            ):
     """
     Calculate cross entropy loss over a subset of the vocabulary.
 
@@ -128,7 +139,6 @@ def get_verbalized_grads_from_wrapped_model(wrapped_model, tokenizer, inputs: st
     Returns:
     - torch.Tensor: The cross entropy loss.
     """
-    torch.random.manual_seed(0)
     ground_truth_embeds = get_sentence_embedding(
         wrapped_model.model, tokenizer, inputs
     )
@@ -146,13 +156,30 @@ def get_verbalized_grads_from_wrapped_model(wrapped_model, tokenizer, inputs: st
     grads = {}
     norms = {}
     hidden_states = outputs.hidden_states[1:] # outputs.hidden_states[0] is the embedding layer
+    if gradient_manipulation == "pgd":
+        # print(hidden_states)
+        X_pgd = {}
+        for i in range(len(hidden_states)):
+            X_pgd[i] = hidden_states[i].clone()
     for i in range(len(hidden_states)):
-        grads[i] = torch.autograd.grad(loss, hidden_states[i], retain_graph=True, allow_unused=True)[0].detach()
+        grads[i] = torch.autograd.grad(loss, hidden_states[i], retain_graph=True, allow_unused=True)[0]
         norms[i] = torch.norm(grads[i], dim=-1, keepdim=True)
-        norm_mask = norms[i] <= 1
-        norms[i][norm_mask] = 1
-        grads[i] = grads[i] / norms[i]
 
+        if gradient_manipulation == "clipping":
+            norm_mask = norms[i] <= 1
+            norms[i][norm_mask] = 1
+            grads[i] = grads[i] / norms[i]
+        elif gradient_manipulation == "pgd":
+            step_size = -1e-3
+            epsilon = 0.3
+            eta = step_size * grads[i].data.sign()
+            X_pgd[i] = X_pgd[i].data + eta
+            eta = torch.clamp(X_pgd[i].data - hidden_states[i].data, -epsilon, epsilon)
+            X_pgd[i] = Variable(hidden_states[i].data + eta, requires_grad=True)
+            # X_pgd[i] = Variable(torch.clamp(X_pgd[i], 0, 1.0), requires_grad=True)
+            grads[i] = X_pgd[i] - hidden_states[i]
+
+    # print(grads)
     probs = softmax(outputs.logits[:, -1, verbalizer].detach().cpu().numpy()[0])
     logits = outputs.logits
 
@@ -170,7 +197,6 @@ def get_verbalized_grads(model, tokenizer, inputs: str, loss_fct, targets, verba
     Returns:
     - torch.Tensor: The cross entropy loss.
     """
-    torch.random.manual_seed(0)
     ground_truth_embeds = get_sentence_embedding(
         model, tokenizer, inputs
     )
