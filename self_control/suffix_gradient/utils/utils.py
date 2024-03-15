@@ -126,6 +126,7 @@ def get_verbalized_grads_from_wrapped_model(wrapped_model,
                                             targets,
                                             verbalizer: List[int],
                                             smoothing=0.5,
+                                            norm=1,
                                             gradient_manipulation: str="clipping"
                                             ):
     """
@@ -163,16 +164,16 @@ def get_verbalized_grads_from_wrapped_model(wrapped_model,
             X_pgd[i] = hidden_states[i].clone()
     for i in range(len(hidden_states)):
         grads[i] = torch.autograd.grad(loss, hidden_states[i], retain_graph=True, allow_unused=True)[0]
-        norms[i] = torch.norm(grads[i], dim=-1, keepdim=True)
+        norms[i] = torch.norm(grads[i], dim=-1, p=2, keepdim=True)
 
         if gradient_manipulation == "clipping":
-            norm_mask = norms[i] <= 1
+            norm_mask = norms[i] <= norm
             norms[i][norm_mask] = 1
             grads[i] = grads[i] / norms[i]
         elif gradient_manipulation == "pgd":
             step_size = -1e-3
             epsilon = 0.3
-            eta = step_size * grads[i].data.sign()
+            eta = step_size * grads[i].data
             X_pgd[i] = X_pgd[i].data + eta
             eta = torch.clamp(X_pgd[i].data - hidden_states[i].data, -epsilon, epsilon)
             X_pgd[i] = Variable(hidden_states[i].data + eta, requires_grad=True)

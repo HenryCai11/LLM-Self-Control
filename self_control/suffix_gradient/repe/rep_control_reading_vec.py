@@ -21,6 +21,8 @@ class WrappedBlock(torch.nn.Module):
     def forward(self, *args, **kwargs):
         output = self.block(*args, **kwargs)
 
+        
+
         if isinstance(output, tuple):
             self.output = output[0]
             modified = output[0]
@@ -76,7 +78,7 @@ class WrappedBlock(torch.nn.Module):
                     # print(modified.shape)
                     # print(self.controller.shape)
                     len_token = min(self.controller.shape[1], modified.shape[1])
-                    if len_token != 1:
+                    if len_token != 1: # In this way can we use use_cache TODO: make this more elegant
                         modified[:, :len_token] = modified[:, :len_token] + self.controller[:, :len_token] * mask
                 else:
                     assert False, f"Unknown token position {self.token_pos}."
@@ -172,11 +174,14 @@ class WrappedReadingVecModel(torch.nn.Module):
                             use_last=False,
                             use_cache=False,
                             keep_input=False,
-                            smoothing: float = 0.5,
+                            smoothing: float = 0,
                             search=False,
                             verbose=False,
                             gradient_manipulation="clipping",
                             return_intermediate=False,
+                            remain_control=False,
+                            load_best_last=False,
+                            norm=1,
                             epsilon=0.3,
                             annealing: float=None,
                             **kwargs    # for the generate function
@@ -190,10 +195,11 @@ class WrappedReadingVecModel(torch.nn.Module):
         if return_intermediate:
             iterative_outputs = []
 
-        controlled_output = self.generate(prompt, keep_input=True, random_seed=42, **kwargs) # the original output
+        controlled_output = self.generate(prompt, keep_input=True, random_seed=random_seed, use_cache=use_cache, **kwargs) # the original output
+        original_output = controlled_output
         if verbose:
             print("Original Output:\n", controlled_output)
-            rationale = self.generate(controlled_output+suffix.suffix, keep_input=False, random_seed=42, **kwargs)
+            rationale = self.generate(controlled_output+suffix.suffix, keep_input=False, random_seed=random_seed, use_cache=use_cache **kwargs)
             print("Rationale:\n", rationale)
             print("="*50)
         ori_inputs = self.tokenizer.encode(prompt, add_special_tokens=False)
@@ -222,6 +228,7 @@ class WrappedReadingVecModel(torch.nn.Module):
                         targets=target_token,
                         verbalizer=verbalizer,
                         smoothing=smoothing,
+                        norm=norm,
                     )
                     composed_grads = {k: (composed_grads[k] + grads[k] * suffix_item.direction) if k in composed_grads else grads[k]\
                                        for k in set(grads)}
@@ -241,6 +248,7 @@ class WrappedReadingVecModel(torch.nn.Module):
                     targets=target_token,
                     verbalizer=verbalizer,
                     smoothing=smoothing,
+                    norm=norm,
                     gradient_manipulation=gradient_manipulation,
                 )
 
@@ -266,18 +274,11 @@ class WrappedReadingVecModel(torch.nn.Module):
                 coeff = step_size
 
             for i in grads:
-                if annealing is None:
-                    if i in acc_grads:
-                        acc_grads[i] = acc_grads[i][:, :query_length] + coeff * grads[i][:, :query_length]
-                    else:
-                        acc_grads[i] = coeff * grads[i][:, :query_length]
+                if i in acc_grads:
+                    acc_grads[i] = acc_grads[i][:, :query_length] + coeff * grads[i][:, :query_length]
                 else:
-                    if consistent:
-                        warnings.warn("annealing != None and consistent=True may not be compatible. Please make sure you are aware of this.")
-                    if i in acc_grads:
-                        acc_grads[i] = acc_grads[i][:, :query_length] * annealing + coeff * grads[i][:, :query_length]
-                    else:
-                        acc_grads[i] = coeff * grads[i][:, :query_length]
+                    acc_grads[i] = coeff * grads[i][:, :query_length]
+            coeff *= annealing
                     
             self.control_on_layers(
                 layer_ids=layer_ids,
@@ -288,13 +289,13 @@ class WrappedReadingVecModel(torch.nn.Module):
                 epsilon=epsilon
             )
 
-            controlled_output = self.generate(prompt, keep_input=True, random_seed=42, **kwargs)
+            controlled_output = self.generate(prompt, keep_input=True, random_seed=random_seed, use_cache=use_cache, **kwargs)
             if not consistent:
                 self.reset()
             if verbose:
                 print(f"Loss from the iteration {iter}: {loss.item()}")
                 print(f"Output form the iteration {iter}:\n", controlled_output)
-                rationale = self.generate(controlled_output+suffix.suffix, keep_input=False, random_seed=42, **kwargs)
+                rationale = self.generate(controlled_output+suffix.suffix, keep_input=False, random_seed=random_seed, use_cache=use_cache, **kwargs)
                 print("Rationale:\n", rationale)
                 print("="*50)
             if return_intermediate:
@@ -308,24 +309,30 @@ class WrappedReadingVecModel(torch.nn.Module):
             targets=target_token,
             verbalizer=verbalizer,
             smoothing=smoothing,
+            norm=norm,
         )
         if loss < best_loss:
             best_loss = loss
             best_grads = acc_grads
-        self.control_on_layers(
-            layer_ids=layer_ids,
-            grads=best_grads,
-            query_length=query_length,
-            token_pos=token_pos,
-        )
-        controlled_output = self.generate(prompt, keep_input=True, random_seed=42, **kwargs)
+        if load_best_last:
+            self.control_on_layers(
+                layer_ids=layer_ids,
+                grads=best_grads,
+                query_length=query_length,
+                token_pos=token_pos,
+            )
+        controlled_output = self.generate(prompt, keep_input=True, random_seed=random_seed, use_cache=use_cache, **kwargs)
+        if not remain_control:
+            self.reset()
         if return_intermediate:
-            return controlled_output, iterative_outputs
+            return controlled_output, [original_output] + iterative_outputs
         else:
             return controlled_output
 
         
-    def generate(self, prompt, max_new_tokens=100, random_seed=0, use_cache=False, keep_input=False, **kwargs):
+    def generate(self, prompt, max_new_tokens=100, random_seed=42, use_cache=False, keep_input=False, **kwargs):
+        if use_cache:
+            print("Using Cache")
         self.model.eval()
         do_sample = False
         temperature = kwargs.pop("temperature", None)
@@ -353,6 +360,7 @@ class WrappedReadingVecModel(torch.nn.Module):
                 inputs_embeds=ground_truth_embeds,
                 max_new_tokens=max_new_tokens,
                 temperature=temperature,
+                use_cache=use_cache,
                 do_sample=True,
                 num_return_sequences=1,
             )
@@ -360,6 +368,7 @@ class WrappedReadingVecModel(torch.nn.Module):
             ground_truth_generation = self.model.generate(
                 inputs_embeds=ground_truth_embeds,
                 max_new_tokens=max_new_tokens,
+                use_cache=use_cache,
                 top_k=top_k,
                 do_sample=True,
                 num_return_sequences=1,
@@ -369,6 +378,7 @@ class WrappedReadingVecModel(torch.nn.Module):
             ground_truth_generation = self.model.generate(
                 inputs_embeds=ground_truth_embeds,
                 max_new_tokens=max_new_tokens,
+                use_cache=use_cache,
                 top_p=top_p,
                 do_sample=True,
                 num_return_sequences=1,
@@ -379,6 +389,7 @@ class WrappedReadingVecModel(torch.nn.Module):
                 inputs_embeds=ground_truth_embeds,
                 max_new_tokens=max_new_tokens,
                 # top_p=top_p,
+                use_cache=use_cache,
                 do_sample=False,
                 num_return_sequences=1,
             )
