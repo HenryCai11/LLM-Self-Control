@@ -143,46 +143,48 @@ def get_verbalized_grads_from_wrapped_model(wrapped_model,
     ground_truth_embeds = get_sentence_embedding(
         wrapped_model.model, tokenizer, inputs
     )
-    outputs = wrapped_model(
-        inputs_embeds=ground_truth_embeds,
-        # input_ids=inputs["input_ids"],
-        # attention_mask=inputs["attention_mask"],
-        output_hidden_states=True,
-    )
-    one_hot_dist = torch.zeros(1, outputs.logits.shape[-1])
-    one_hot_dist[0, targets[0].cpu().numpy()] = 1
-    one_hot_dist = label_smoothing(one_hot_dist, smoothing=smoothing)
-    loss = loss_fct(outputs.logits[:, -1, :], one_hot_dist.to(wrapped_model.model.device))
+    with torch.enable_grad():
+        outputs = wrapped_model(
+            inputs_embeds=ground_truth_embeds,
+            # input_ids=inputs["input_ids"],
+            # attention_mask=inputs["attention_mask"],
+            output_hidden_states=True,
+        )
+        one_hot_dist = torch.zeros(1, outputs.logits.shape[-1])
+        one_hot_dist[0, targets[0].cpu().numpy()] = 1
+        one_hot_dist = label_smoothing(one_hot_dist, smoothing=smoothing)
+        loss = loss_fct(outputs.logits[:, -1, :], one_hot_dist.to(wrapped_model.model.device))
 
-    grads = {}
-    norms = {}
-    hidden_states = outputs.hidden_states[1:] # outputs.hidden_states[0] is the embedding layer
-    if gradient_manipulation == "pgd":
-        # print(hidden_states)
-        X_pgd = {}
+        grads = {}
+        norms = {}
+        hidden_states = outputs.hidden_states[1:] # outputs.hidden_states[0] is the embedding layer
+        if gradient_manipulation == "pgd":
+            # print(hidden_states)
+            X_pgd = {}
+            for i in range(len(hidden_states)):
+                X_pgd[i] = hidden_states[i].clone()
+
         for i in range(len(hidden_states)):
-            X_pgd[i] = hidden_states[i].clone()
-    for i in range(len(hidden_states)):
-        grads[i] = torch.autograd.grad(loss, hidden_states[i], retain_graph=True, allow_unused=True)[0]
-        norms[i] = torch.norm(grads[i], dim=-1, p=2, keepdim=True)
+            grads[i] = torch.autograd.grad(loss, hidden_states[i], retain_graph=True, allow_unused=True)[0]
+            norms[i] = torch.norm(grads[i], dim=-1, p=2, keepdim=True)
 
-        if gradient_manipulation == "clipping":
-            norm_mask = norms[i] <= norm
-            norms[i][norm_mask] = 1
-            grads[i] = grads[i] / norms[i]
-        elif gradient_manipulation == "pgd":
-            step_size = -1e-3
-            epsilon = 0.3
-            eta = step_size * grads[i].data
-            X_pgd[i] = X_pgd[i].data + eta
-            eta = torch.clamp(X_pgd[i].data - hidden_states[i].data, -epsilon, epsilon)
-            X_pgd[i] = Variable(hidden_states[i].data + eta, requires_grad=True)
-            # X_pgd[i] = Variable(torch.clamp(X_pgd[i], 0, 1.0), requires_grad=True)
-            grads[i] = X_pgd[i] - hidden_states[i]
+            if gradient_manipulation == "clipping":
+                norm_mask = norms[i] <= norm
+                norms[i][norm_mask] = 1
+                grads[i] = grads[i] / norms[i]
+            elif gradient_manipulation == "pgd":
+                step_size = -1e-3
+                epsilon = 0.3
+                eta = step_size * grads[i].data
+                X_pgd[i] = X_pgd[i].data + eta
+                eta = torch.clamp(X_pgd[i].data - hidden_states[i].data, -epsilon, epsilon)
+                X_pgd[i] = Variable(hidden_states[i].data + eta, requires_grad=True)
+                # X_pgd[i] = Variable(torch.clamp(X_pgd[i], 0, 1.0), requires_grad=True)
+                grads[i] = X_pgd[i] - hidden_states[i]
 
-    # print(grads)
-    probs = softmax(outputs.logits[:, -1, verbalizer].detach().cpu().numpy()[0])
-    logits = outputs.logits
+        # print(grads)
+        probs = softmax(outputs.logits[:, -1, verbalizer].detach().cpu().numpy()[0])
+        logits = outputs.logits
 
     return grads, outputs, loss, probs, logits, norms
 
@@ -223,7 +225,7 @@ def get_verbalized_grads(model, tokenizer, inputs: str, loss_fct, targets, verba
     probs = softmax(outputs.logits[:, -1, verbalizer].detach().cpu().numpy()[0])
     logits = outputs.logits
 
-    return grads, outputs, loss, probs, logits, norms
+    return grads, hidden_states, loss, probs, logits, norms
 
 def control_on_layers(layer_ids, wrapped_model, grads, query_length, token_pos="start"):
     """

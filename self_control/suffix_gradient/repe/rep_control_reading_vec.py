@@ -21,7 +21,6 @@ class WrappedBlock(torch.nn.Module):
     def forward(self, *args, **kwargs):
         output = self.block(*args, **kwargs)
 
-        
 
         if isinstance(output, tuple):
             self.output = output[0]
@@ -179,11 +178,12 @@ class WrappedReadingVecModel(torch.nn.Module):
                             verbose=False,
                             gradient_manipulation="clipping",
                             return_intermediate=False,
+                            return_hiddens=False,
                             remain_control=False,
                             load_best_last=False,
                             norm=1,
                             epsilon=0.3,
-                            annealing: float=None,
+                            annealing: float=1,
                             **kwargs    # for the generate function
                             ):
         self.model.eval()
@@ -324,6 +324,12 @@ class WrappedReadingVecModel(torch.nn.Module):
         controlled_output = self.generate(prompt, keep_input=True, random_seed=random_seed, use_cache=use_cache, **kwargs)
         if not remain_control:
             self.reset()
+        if return_hiddens:
+            embeds = get_sentence_embedding(
+                self.model, self.tokenizer, prompt
+            )
+            outputs = self.model(inputs_embeds=embeds, output_hidden_states=True)
+            return outputs['hidden_states'][1:]
         if return_intermediate:
             return controlled_output, [original_output] + iterative_outputs
         else:
@@ -389,7 +395,6 @@ class WrappedReadingVecModel(torch.nn.Module):
                 inputs_embeds=ground_truth_embeds,
                 max_new_tokens=max_new_tokens,
                 # top_p=top_p,
-                use_cache=use_cache,
                 do_sample=False,
                 num_return_sequences=1,
             )
@@ -415,6 +420,48 @@ class WrappedReadingVecModel(torch.nn.Module):
         #     top_p=top_p,
         # )
         # return self.tokenizer.batch_decode(generate_ids)
+
+    # def generate_text_with_cache(self, prompt, keep_input=True, max_length=50, random_seed=42, use_cache=True, **kwargs):
+    #     cache = None
+    #     torch.random.manual_seed(random_seed)
+    #     # inputs = self.tokenizer(prompt, return_tensors="pt")
+    #     # attention_mask = inputs.attention_mask.to(self.model.device)
+    #     ground_truth_embeds = get_sentence_embedding(
+    #         self.model, self.tokenizer, prompt
+    #     )
+    #     generated_ids = []
+    #     generated_embeddings = ground_truth_embeds
+    #     for _ in range(max_length):
+    #         # Forward pass with cache
+    #         outputs = self.model(inputs_embeds=generated_embeddings, use_cache=True, past_key_values=cache)
+    #         logits, cache = outputs.logits, outputs.past_key_values
+
+    #         # Sample next token
+    #         next_token_id = logits[:, -1, :].argmax(dim=-1).item()
+    #         generated_ids.append(next_token_id)
+
+    #         # Get embedding of the next token
+    #         next_token_embedding = self.model.lm_head.weight[next_token_id].unsqueeze(0).unsqueeze(0)
+
+    #         # Append generated token's embedding to the input embeddings
+    #         generated_embeddings = torch.cat((generated_embeddings, next_token_embedding), dim=1)
+
+    #         # Stop generation if EOS token is generated
+    #         if next_token_id == self.tokenizer.eos_token_id:
+    #             break
+    #     del cache
+    #     # Decode generated token IDs to text
+    #     if keep_input:
+    #         ground_truth_generation = self.tokenizer.batch_decode(
+    #             generated_ids,
+    #             skip_special_tokens=True,
+    #         )
+    #         return prompt + ground_truth_generation[0]
+    #     else:
+    #         ground_truth_generation = self.tokenizer.batch_decode(
+    #             generated_ids
+    #         )
+    #         return ground_truth_generation[0]
         
     def controlled_generate_early_stop(self, prompt, target, max_new_tokens, random_seed=0, use_cache=True):
         """

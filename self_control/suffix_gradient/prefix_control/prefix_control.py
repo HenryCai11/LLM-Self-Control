@@ -14,8 +14,6 @@ from datasets import load_dataset
 import torch.nn.functional as F
 import gc
 
-from repe import WrappedReadingVecModel
-
 from trl import SFTTrainer, DataCollatorForCompletionOnlyLM
 from accelerate import Accelerator
 import datetime
@@ -44,17 +42,18 @@ config = AdaptionPromptConfig(
     adapter_layers=30,
     task_type="CAUSAL_LM",
     # target_modules="q_proj, v_proj, k_proj,"
+    target_modules="self_attn"
 )
 
-# model_name_or_path = "meta-llama/Llama-2-13b-chat-hf"
-model_name_or_path = "/home/models/llama2-7b-chat-hf/"
+model_name_or_path = "meta-llama/Llama-2-7b-chat-hf"
+# model_name_or_path = "/home/models/llama2-7b-chat-hf/"
 
-model = AutoModelForCausalLM.from_pretrained(model_name_or_path, load_in_8bit=True, device_map={"": Accelerator().process_index})
+model = AutoModelForCausalLM.from_pretrained(model_name_or_path, device_map="auto")
 use_fast_tokenizer = "LlamaForCausalLM" not in model.config.architectures
 tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, use_fast=use_fast_tokenizer, padding_side="right", legacy=False)
 tokenizer.pad_token_id = 0
-
-# model = get_peft_model(model, config)
+model.enable_input_require_grads()
+model = get_peft_model(model, config)
 # model = prepare_model_for_kbit_training(model, config)
 
 twitter_sentiment_data = load_dataset("carblacac/twitter-sentiment-analysis")
@@ -92,7 +91,7 @@ from transformers import Trainer, TrainingArguments
 training_args = TrainingArguments(
     output_dir=args.output_dir,
     evaluation_strategy="epoch",
-    learning_rate=2e-5,
+    learning_rate=2e-3,
     per_device_train_batch_size=16,
     per_device_eval_batch_size=32,
     num_train_epochs=3,
@@ -106,8 +105,8 @@ trainer = SFTTrainer(
     model=model,
     args=training_args,
     peft_config=config,
-    train_dataset=twitter_sentiment_data["train"].select(range(1000)),
-    eval_dataset=twitter_sentiment_data["validation"].select(range(1000)),
+    train_dataset=twitter_sentiment_data["train"].select(range(100)),
+    eval_dataset=twitter_sentiment_data["validation"].select(range(100)),
     formatting_func=lambda x: formatting_prompts_func(x, instruction=instruction),
     data_collator=prepare_collator(tokenizer, instruction=instruction),
     tokenizer=tokenizer,
@@ -115,11 +114,12 @@ trainer = SFTTrainer(
 
 print(f"Using {torch.cuda.device_count()} GPUs")
 # Wrap the model with nn.DataParallel for multi-GPU training
-    
+for name, param in model.named_parameters():
+    if param.requires_grad:
+        print(f"Parameter: {name}, requires_grad: {param.requires_grad}")
 trainer.train()
 
 trainer.model.save_pretrained(os.path.join(args.output_dir, "final_checkpoint/"))
-
+model.push_to_hub("HenryCai1129/adapter-sent4")
 trained_model = pipeline('text-generation', model=trainer.model, tokenizer=tokenizer)
 trained_model(f"{instruction}\nI am happy\nAnswer: ", max_length=50, num_return_sequences=1)
-
