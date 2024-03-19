@@ -21,7 +21,6 @@ class WrappedBlock(torch.nn.Module):
     def forward(self, *args, **kwargs):
         output = self.block(*args, **kwargs)
 
-
         if isinstance(output, tuple):
             self.output = output[0]
             modified = output[0]
@@ -29,6 +28,12 @@ class WrappedBlock(torch.nn.Module):
             self.output = output
             modified = output
 
+
+        # print(modified.shape)
+        # print(kwargs.keys())
+
+            
+            
         # print(modified.shape)
         # print(kwargs.keys())
 
@@ -128,6 +133,7 @@ class WrappedReadingVecModel(torch.nn.Module):
                         grads,
                         query_length,
                         token_pos="start",
+                        block_name="decoder_block",
                         gradient_manipulation: str="clipping",
                         epsilon: float=0.3
                         ) -> None:
@@ -135,8 +141,6 @@ class WrappedReadingVecModel(torch.nn.Module):
         Control the activations of the model on the specified layers.
         """
         self.unwrap()
-
-        block_name="decoder_block"
 
         self.wrap_block(layer_ids, block_name=block_name)
         activations = {}
@@ -179,6 +183,7 @@ class WrappedReadingVecModel(torch.nn.Module):
                             gradient_manipulation="clipping",
                             return_intermediate=False,
                             return_hiddens=False,
+                            return_grads=False,
                             remain_control=False,
                             load_best_last=False,
                             norm=1,
@@ -194,7 +199,6 @@ class WrappedReadingVecModel(torch.nn.Module):
         gradient_bs = 1 # TODO: default to 1
         if return_intermediate:
             iterative_outputs = []
-
         controlled_output = self.generate(prompt, keep_input=True, random_seed=random_seed, use_cache=use_cache, **kwargs) # the original output
         original_output = controlled_output
         if verbose:
@@ -209,10 +213,9 @@ class WrappedReadingVecModel(torch.nn.Module):
         for iter in range(iterations):
             # print(controlled_output)
             controlled_output = controlled_output + suffix.suffix
-            # rationale = self.generate(controlled_output, keep_input=True, random_seed=42)
-            # print("Rationale:\n", rationale)
 
             if isinstance(suffix, list):
+                warnings.warn(f"Accepting a list of suffixes has not been tested right now")
                 composed_grads = {}
                 for suffix_item in suffix:
                     target = suffix_item.target
@@ -237,7 +240,8 @@ class WrappedReadingVecModel(torch.nn.Module):
             else:
                 target = suffix.target
                 target_token = self.tokenizer.encode(target, add_special_tokens=False, return_tensors='pt').squeeze(0)
-                assert target_token.shape[-1] == 1, "Target should be a single token for now."
+                if target_token.shape[-1] != 1:
+                    warnings.warn(f"Target should be single token for now. Using the first token of suffix {suffix.target} as target")
                 target_token = (target_token * torch.ones(gradient_bs).long()).to(self.model.device)
                 verbalizer = [target_token[0]]
                 grads, outputs, loss, probs, logits, norms = get_verbalized_grads_from_wrapped_model(
@@ -321,9 +325,12 @@ class WrappedReadingVecModel(torch.nn.Module):
                 query_length=query_length,
                 token_pos=token_pos,
             )
-        controlled_output = self.generate(prompt, keep_input=True, random_seed=random_seed, use_cache=use_cache, **kwargs)
+            controlled_output = self.generate(prompt, keep_input=True, random_seed=random_seed, use_cache=use_cache, **kwargs)
+        # TODO: return a tuple
         if not remain_control:
             self.reset()
+        if return_grads:
+            return controlled_output, best_grads
         if return_hiddens:
             embeds = get_sentence_embedding(
                 self.model, self.tokenizer, prompt
@@ -357,6 +364,7 @@ class WrappedReadingVecModel(torch.nn.Module):
         torch.random.manual_seed(random_seed)
         # inputs = self.tokenizer(prompt, return_tensors="pt")
         # attention_mask = inputs.attention_mask.to(self.model.device)
+
         ground_truth_embeds = get_sentence_embedding(
             self.model, self.tokenizer, prompt
         )
@@ -397,6 +405,7 @@ class WrappedReadingVecModel(torch.nn.Module):
                 # top_p=top_p,
                 do_sample=False,
                 num_return_sequences=1,
+                **kwargs
             )
         if keep_input:
             ground_truth_generation = self.tokenizer.batch_decode(
@@ -409,59 +418,14 @@ class WrappedReadingVecModel(torch.nn.Module):
                 ground_truth_generation
             )
             return ground_truth_generation[0]
-        # generate_ids = self.model.generate(
-        #     input_ids=inputs.input_ids.to(self.model.device),
-        #     max_new_tokens=max_new_tokens,
-        #     use_cache=use_cache,
-        #     num_return_sequences=1,
-        #     temperature=temperature,
-        #     do_sample=do_sample,
-        #     top_k=top_k,
-        #     top_p=top_p,
-        # )
-        # return self.tokenizer.batch_decode(generate_ids)
-
-    # def generate_text_with_cache(self, prompt, keep_input=True, max_length=50, random_seed=42, use_cache=True, **kwargs):
-    #     cache = None
-    #     torch.random.manual_seed(random_seed)
-    #     # inputs = self.tokenizer(prompt, return_tensors="pt")
-    #     # attention_mask = inputs.attention_mask.to(self.model.device)
-    #     ground_truth_embeds = get_sentence_embedding(
-    #         self.model, self.tokenizer, prompt
-    #     )
-    #     generated_ids = []
-    #     generated_embeddings = ground_truth_embeds
-    #     for _ in range(max_length):
-    #         # Forward pass with cache
-    #         outputs = self.model(inputs_embeds=generated_embeddings, use_cache=True, past_key_values=cache)
-    #         logits, cache = outputs.logits, outputs.past_key_values
-
-    #         # Sample next token
-    #         next_token_id = logits[:, -1, :].argmax(dim=-1).item()
-    #         generated_ids.append(next_token_id)
-
-    #         # Get embedding of the next token
-    #         next_token_embedding = self.model.lm_head.weight[next_token_id].unsqueeze(0).unsqueeze(0)
-
-    #         # Append generated token's embedding to the input embeddings
-    #         generated_embeddings = torch.cat((generated_embeddings, next_token_embedding), dim=1)
-
-    #         # Stop generation if EOS token is generated
-    #         if next_token_id == self.tokenizer.eos_token_id:
-    #             break
-    #     del cache
-    #     # Decode generated token IDs to text
-    #     if keep_input:
-    #         ground_truth_generation = self.tokenizer.batch_decode(
-    #             generated_ids,
-    #             skip_special_tokens=True,
-    #         )
-    #         return prompt + ground_truth_generation[0]
-    #     else:
-    #         ground_truth_generation = self.tokenizer.batch_decode(
-    #             generated_ids
-    #         )
-    #         return ground_truth_generation[0]
+        
+    def get_past_kvs(self, prompt, **kwargs):
+        inputs_embeds = get_sentence_embedding(
+            self.model, self.tokenizer, prompt
+        )
+        with torch.no_grad():
+            output = self.model(inputs_embeds=inputs_embeds, use_cache=True, return_dict=True)
+            return output.past_key_values
         
     def controlled_generate_early_stop(self, prompt, target, max_new_tokens, random_seed=0, use_cache=True):
         """
@@ -543,6 +507,26 @@ class WrappedReadingVecModel(torch.nn.Module):
             block = self.model.model.layers[layer_id].self_attn
             if not self.is_wrapped(block):
                 self.model.model.layers[layer_id].self_attn = WrappedBlock(block)
+
+    def wrap_key_value(self, layer_id):
+        if self.is_wrapped(self.model.model.layers[layer_id]):
+            # first wrap the k projection
+            block = self.model.model.layers[layer_id].block.self_attn.k_proj
+            if not self.is_wrapped(block):
+                self.model.model.layers[layer_id].block.self_attn.k_proj = WrappedBlock(block)
+            # then wrap the v projection
+            block = self.model.model.layers[layer_id].block.self_attn.v_proj
+            if not self.is_wrapped(block):
+                self.model.model.layers[layer_id].block.self_attn.v_proj = WrappedBlock(block)
+        else:
+            # first wrap the k projection
+            block = self.model.model.layers[layer_id].self_attn.k_proj
+            if not self.is_wrapped(block):
+                self.model.model.layers[layer_id].self_attn.k_proj = WrappedBlock(block)
+            # then wrap the v projection
+            block = self.model.model.layers[layer_id].self_attn.v_proj
+            if not self.is_wrapped(block):
+                self.model.model.layers[layer_id].self_attn.v_proj = WrappedBlock(block)
     
     def wrap_mlp(self, layer_id):
         if self.is_wrapped(self.model.model.layers[layer_id]):
@@ -590,7 +574,9 @@ class WrappedReadingVecModel(torch.nn.Module):
             
     def wrap_block(self, layer_ids, block_name):
         def _wrap_block(layer_id, block_name):
-            if block_name == 'self_attn':
+            if block_name == 'kv':
+                self.wrap_key_value(layer_id)
+            elif block_name == 'self_attn':
                 self.wrap_self_attn(layer_id)
             elif block_name == 'mlp':
                 self.wrap_mlp(layer_id)
@@ -609,6 +595,23 @@ class WrappedReadingVecModel(torch.nn.Module):
         else:
             _wrap_block(layer_ids, block_name)
 
+    def update_kv_cache(self, deltas, layer_ids, prompt):
+        updated_kv = tuple()
+        inputs_embeds = get_sentence_embedding(self.model, self.tokenizer, prompt)
+        for layer in range(len(self.model.model.layers)):
+            if layer in layer_ids and layer != 0:
+                if layer not in deltas:
+                    raise ValueError(f"Layer {layer} not in deltas.")
+                assert inputs_embeds.shape[1] == deltas[layer].shape[1], f"Query length of the input {inputs_embeds.shape[1]} does not match the query length of the deltas {deltas[layer].shape[1]}."
+                self.control_on_layers([layer-1], deltas, query_length=inputs_embeds.shape[1]) # need to control the last layer's hidden states to affect kv cache in this layer
+                single_layer_kv = self.model(inputs_embeds=inputs_embeds, use_cache=True).past_key_values[layer]
+                updated_kv += (single_layer_kv,)
+            else:
+                self.unwrap()
+                single_layer_kv = self.model(inputs_embeds=inputs_embeds, use_cache=True).past_key_values[layer]
+                updated_kv += (single_layer_kv,)
+
+        return updated_kv
             
     def get_activations(self, layer_ids, block_name='decoder_block'):
 
@@ -619,6 +622,8 @@ class WrappedReadingVecModel(torch.nn.Module):
                 current_block = current_layer.block
                 if block_name == 'decoder_block':
                     return current_layer.output
+                elif block_name == 'kv' and self.is_wrapped(current_block.k_proj) and self.is_wrapped(current_block.v_proj):  # to be able to control kv separately
+                    return current_block.self_attn.k_proj.output, current_block.self_attn.v_proj.output
                 elif block_name == 'self_attn' and self.is_wrapped(current_block.self_attn):
                     return current_block.self_attn.output
                 elif block_name == 'mlp' and self.is_wrapped(current_block.mlp):
@@ -631,7 +636,11 @@ class WrappedReadingVecModel(torch.nn.Module):
                     assert False, f"No wrapped block named {block_name}."
 
             else:
-                if block_name == 'self_attn' and self.is_wrapped(current_layer.self_attn):
+                if block_name == 'decoder_block':
+                    return current_layer.output
+                elif block_name == 'kv' and self.is_wrapped(current_layer.self_attn.k_proj) and self.is_wrapped(current_layer.self_attn.v_proj):  # to be able to control kv separately
+                    return current_layer.self_attn.k_proj.output, current_layer.self_attn.v_proj.output
+                elif block_name == 'self_attn' and self.is_wrapped(current_layer.self_attn):
                     return current_layer.self_attn.output
                 elif block_name == 'mlp' and self.is_wrapped(current_layer.mlp):
                     return current_layer.mlp.output
@@ -659,8 +668,11 @@ class WrappedReadingVecModel(torch.nn.Module):
             if block_name == 'decoder_block':
                 current_layer.set_controller(activations, token_pos, masks, normalize)
             elif self.is_wrapped(current_layer):
-                current_block = current_layer.block  
-                if block_name == 'self_attn' and self.is_wrapped(current_block.self_attn):
+                current_block = current_layer.block
+                if block_name == 'kv' and self.is_wrapped(current_block.k_proj) and self.is_wrapped(current_block.v_proj):  # to be able to control kv separately
+                    current_block.k_proj.set_controller(activations, token_pos, masks, normalize)
+                    current_block.v_proj.set_controller(activations, token_pos, masks, normalize)
+                elif block_name == 'self_attn' and self.is_wrapped(current_block.self_attn):
                     current_block.self_attn.set_controller(activations, token_pos, masks, normalize)
                 elif block_name == 'mlp' and self.is_wrapped(current_block.mlp):
                     current_block.mlp.set_controller(activations, token_pos, masks, normalize)
@@ -672,6 +684,9 @@ class WrappedReadingVecModel(torch.nn.Module):
                     return f"No wrapped block named {block_name}."
 
             else:
+                if block_name == 'kv' and self.is_wrapped(current_layer.self_attn.k_proj) and self.is_wrapped(current_layer.self_attn.v_proj):  # to be able to control kv separately
+                    current_layer.k_proj.set_controller(activations, token_pos, masks, normalize)
+                    current_layer.v_proj.set_controller(activations, token_pos, masks, normalize)
                 if block_name == 'self_attn' and self.is_wrapped(current_layer.self_attn):
                     current_layer.self_attn.set_controller(activations, token_pos, masks, normalize)
                 elif block_name == 'mlp' and self.is_wrapped(current_layer.mlp):
