@@ -2,11 +2,14 @@
 import torch
 import warnings
 import numpy as np
-from self_control.suffix_gradient.utils import get_sentence_embedding, get_verbalized_grads_from_wrapped_model, control_on_layers, label_smoothing, bidirectional_line_search
-from self_control.suffix_gradient.utils.suffix_manager import SuffixItem
+from self_control.utils import get_sentence_embedding, get_verbalized_grads_from_wrapped_model, control_on_layers, label_smoothing, bidirectional_line_search
+from self_control.utils.suffix_manager import SuffixItem
 from scipy.special import softmax
 from typing import Union, List
 from peft import PeftModel
+
+import transformers
+import random
 
 class WrappedBlock(torch.nn.Module):
     def __init__(self, block):
@@ -164,7 +167,9 @@ class WrappedReadingVecModel(torch.nn.Module):
 
 
     def controlled_generate(self,
-                            prompt="",
+                            prompt: str=None,
+                            input_ids=None,
+                            attention_mask=None,
                             suffix: Union[SuffixItem, List[SuffixItem]]=None,
                             loss_fct=None,
                             verbalizer=None,
@@ -186,31 +191,51 @@ class WrappedReadingVecModel(torch.nn.Module):
                             return_grads=False,
                             remain_control=False,
                             load_best_last=False,
+                            save_intermediate_states=False,
+                            do_sample=False,
                             norm=1,
                             epsilon=0.3,
                             annealing: float=1,
                             **kwargs    # for the generate function
                             ):
+        from tqdm import tqdm
+        
+        transformers.set_seed(random_seed)
+        random.seed(random_seed)
+        np.random.seed(random_seed)
+        torch.manual_seed(random_seed)
+        torch.cuda.manual_seed_all(random_seed)
         self.model.eval()
         self.reset()
         best_loss = float('inf')
+        all_grads = []
+        temp_grads = {}
         acc_grads = {}  # accumulated gradients
         best_grads = {}
         gradient_bs = 1 # TODO: default to 1
+
+        # Prepare inputs
+        inputs = {}
+        if prompt is not None:
+            inputs = self.tokenizer(prompt, return_tensors="pt")
+            inputs["input_ids"] = inputs["input_ids"].to(self.model.device)
+            inputs["attention_mask"] = inputs["attention_mask"].to(self.model.device)
+            query_length = inputs["input_ids"].size(1)
+        else:
+            inputs["input_ids"] = input_ids
+            inputs["attention_mask"] = attention_mask
+            query_length = input_ids.size(1) if len(input_ids.shape) == 2 else input_ids.size(0) # size(0) might be the batch size
         if return_intermediate:
             iterative_outputs = []
-        controlled_output = self.generate(prompt, keep_input=True, random_seed=random_seed, use_cache=use_cache, **kwargs) # the original output
+        controlled_output = self.generate(**inputs, use_cache=use_cache, do_sample=do_sample, **kwargs) # the original output
         original_output = controlled_output
         if verbose:
             print("Original Output:\n", controlled_output)
-            rationale = self.generate(controlled_output+suffix.suffix, keep_input=False, random_seed=random_seed, use_cache=use_cache **kwargs)
+            rationale = self.generate(controlled_output+suffix.suffix, use_cache=use_cache, do_sample=do_sample, **kwargs)
             print("Rationale:\n", rationale)
             print("="*50)
-        ori_inputs = self.tokenizer.encode(prompt, add_special_tokens=False)
-        assert isinstance(ori_inputs, list)
-        query_length = len(ori_inputs)
 
-        for iter in range(iterations):
+        for iter in tqdm(range(iterations)):
             # print(controlled_output)
             controlled_output = controlled_output + suffix.suffix
 
@@ -282,6 +307,12 @@ class WrappedReadingVecModel(torch.nn.Module):
                     acc_grads[i] = acc_grads[i][:, :query_length] + coeff * grads[i][:, :query_length]
                 else:
                     acc_grads[i] = coeff * grads[i][:, :query_length]
+                if save_intermediate_states:
+                    temp_grads[i] = acc_grads[i].cpu().detach().clone()
+            if save_intermediate_states:
+                print("Saving")
+                all_grads.append(temp_grads)
+                temp_grads = {}
             coeff *= annealing
                     
             self.control_on_layers(
@@ -293,13 +324,13 @@ class WrappedReadingVecModel(torch.nn.Module):
                 epsilon=epsilon
             )
 
-            controlled_output = self.generate(prompt, keep_input=True, random_seed=random_seed, use_cache=use_cache, **kwargs)
+            controlled_output = self.generate(**inputs, keep_input=True, use_cache=use_cache, do_sample=do_sample, **kwargs)
             if not consistent:
                 self.reset()
             if verbose:
                 print(f"Loss from the iteration {iter}: {loss.item()}")
                 print(f"Output form the iteration {iter}:\n", controlled_output)
-                rationale = self.generate(controlled_output+suffix.suffix, keep_input=False, random_seed=random_seed, use_cache=use_cache, **kwargs)
+                rationale = self.generate(controlled_output+suffix.suffix, keep_input=False, use_cache=use_cache, do_sample=do_sample, **kwargs)
                 print("Rationale:\n", rationale)
                 print("="*50)
             if return_intermediate:
@@ -325,17 +356,21 @@ class WrappedReadingVecModel(torch.nn.Module):
                 query_length=query_length,
                 token_pos=token_pos,
             )
-            controlled_output = self.generate(prompt, keep_input=True, random_seed=random_seed, use_cache=use_cache, **kwargs)
+            controlled_output = self.generate(**inputs, keep_input=True, use_cache=use_cache, do_sample=do_sample, **kwargs)
         # TODO: return a tuple
         if not remain_control:
             self.reset()
+        if save_intermediate_states:
+            return controlled_output, all_grads
         if return_grads:
             return controlled_output, best_grads
         if return_hiddens:
-            embeds = get_sentence_embedding(
-                self.model, self.tokenizer, prompt
-            )
-            outputs = self.model(inputs_embeds=embeds, output_hidden_states=True)
+            tokenized = self.tokenizer(prompt, return_tensors="pt")
+            input_ids = tokenized.input_ids
+            attention_mask = torch.ones_like(input_ids)
+            inputs["input_ids"] = input_ids
+            inputs["attention_mask"] = attention_mask
+            outputs = self.model(**inputs, output_hidden_states=True)
             return outputs['hidden_states'][1:]
         if return_intermediate:
             return controlled_output, [original_output] + iterative_outputs
@@ -343,81 +378,29 @@ class WrappedReadingVecModel(torch.nn.Module):
             return controlled_output
 
         
-    def generate(self, prompt, max_new_tokens=100, random_seed=42, use_cache=False, keep_input=False, **kwargs):
-        if use_cache:
-            print("Using Cache")
-        self.model.eval()
-        do_sample = False
-        temperature = kwargs.pop("temperature", None)
-        top_k = kwargs.pop("top_k", None)
-        top_p = kwargs.pop("top_p", None)
-        if temperature is not None or top_k is not None or top_p is not None:
-            do_sample = True
-            # print("Do Sampling!")
-            # if temperature is not None:
-            #     print("Temperature: ", temperature)
-            # if top_k is not None:
-            #     print("Top K: ", top_k)
-            # if top_p is not None:
-            #     print("Top P: ", top_p)
-        # with torch.no_grad():
-        torch.random.manual_seed(random_seed)
-        # inputs = self.tokenizer(prompt, return_tensors="pt")
-        # attention_mask = inputs.attention_mask.to(self.model.device)
-
-        ground_truth_embeds = get_sentence_embedding(
-            self.model, self.tokenizer, prompt
+    def generate(self,
+                 prompt: str=None,
+                 keep_input=False,
+                 **kwargs):
+        if prompt is not None:
+            inputs = self.tokenizer(prompt, return_tensors="pt")
+            inputs["input_ids"] = inputs["input_ids"].to(self.model.device)
+            inputs["attention_mask"] = inputs["attention_mask"].to(self.model.device)
+            gen_ids = self.model.generate(**inputs, **kwargs)
+        else:
+            gen_ids = self.model.generate(**kwargs)
+        # if keep_input:
+        #     ground_truth_generation = self.tokenizer.decode(
+        #         torch.cat([inputs['input_ids'][0], gen_ids[0]], dim=0),
+        #         skip_special_tokens=True,
+        #     )
+        #     return ground_truth_generation
+        # else:
+        ground_truth_generation = self.tokenizer.decode(
+            gen_ids[0],
+            skip_special_tokens=True,
         )
-        if temperature is not None:
-            temperature = np.round(temperature, 2)
-            ground_truth_generation = self.model.generate(
-                inputs_embeds=ground_truth_embeds,
-                max_new_tokens=max_new_tokens,
-                temperature=temperature,
-                use_cache=use_cache,
-                do_sample=True,
-                num_return_sequences=1,
-            )
-        elif top_k is not None:
-            ground_truth_generation = self.model.generate(
-                inputs_embeds=ground_truth_embeds,
-                max_new_tokens=max_new_tokens,
-                use_cache=use_cache,
-                top_k=top_k,
-                do_sample=True,
-                num_return_sequences=1,
-            )
-        elif top_p is not None:
-            top_p = np.round(top_p, 2)
-            ground_truth_generation = self.model.generate(
-                inputs_embeds=ground_truth_embeds,
-                max_new_tokens=max_new_tokens,
-                use_cache=use_cache,
-                top_p=top_p,
-                do_sample=True,
-                num_return_sequences=1,
-            )
-        else:
-            # print("No temperature or top_k or top_p is provided, using greedy decoding.")
-            ground_truth_generation = self.model.generate(
-                inputs_embeds=ground_truth_embeds,
-                max_new_tokens=max_new_tokens,
-                # top_p=top_p,
-                do_sample=False,
-                num_return_sequences=1,
-                **kwargs
-            )
-        if keep_input:
-            ground_truth_generation = self.tokenizer.batch_decode(
-                ground_truth_generation,
-                skip_special_tokens=True,
-            )
-            return prompt + ground_truth_generation[0]
-        else:
-            ground_truth_generation = self.tokenizer.batch_decode(
-                ground_truth_generation
-            )
-            return ground_truth_generation[0]
+        return ground_truth_generation
         
     def get_past_kvs(self, prompt, **kwargs):
         inputs_embeds = get_sentence_embedding(

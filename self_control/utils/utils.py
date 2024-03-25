@@ -140,14 +140,14 @@ def get_verbalized_grads_from_wrapped_model(wrapped_model,
     Returns:
     - torch.Tensor: The cross entropy loss.
     """
-    ground_truth_embeds = get_sentence_embedding(
-        wrapped_model.model, tokenizer, inputs
-    )
+    tokenized = tokenizer(inputs, return_tensors="pt")
+    tokenized["input_ids"] = tokenized["input_ids"].to(wrapped_model.model.device)
+    tokenized["attention_mask"] = tokenized["attention_mask"].to(wrapped_model.model.device)
     with torch.enable_grad():
         outputs = wrapped_model(
-            inputs_embeds=ground_truth_embeds,
-            # input_ids=inputs["input_ids"],
-            # attention_mask=inputs["attention_mask"],
+            # **tokenized,
+            input_ids=tokenized["input_ids"],
+            attention_mask=tokenized["attention_mask"],
             output_hidden_states=True,
         )
         one_hot_dist = torch.zeros(1, outputs.logits.shape[-1])
