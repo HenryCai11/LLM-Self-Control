@@ -10,6 +10,7 @@ from peft import PeftModel
 
 import transformers
 import random
+from copy import deepcopy
 
 class WrappedBlock(torch.nn.Module):
     def __init__(self, block):
@@ -19,7 +20,6 @@ class WrappedBlock(torch.nn.Module):
         self.controller = None
         self.mask = None
         self.token_pos = None
-        self.normalize = False
 
     def forward(self, *args, **kwargs):
         output = self.block(*args, **kwargs)
@@ -30,20 +30,8 @@ class WrappedBlock(torch.nn.Module):
         else:
             self.output = output
             modified = output
-
-
-        # print(modified.shape)
-        # print(kwargs.keys())
-
-            
-            
-        # print(modified.shape)
-        # print(kwargs.keys())
-
             
         if self.controller is not None:
-            norm_pre = torch.norm(modified, dim=-1, keepdim=True)
-
             if self.mask is not None:
                 mask = self.mask
 
@@ -91,10 +79,6 @@ class WrappedBlock(torch.nn.Module):
                     assert False, f"Unknown token position {self.token_pos}."
             else:
                 modified = modified + self.controller * mask
-
-            if self.normalize:
-                norm_post = torch.norm(modified, dim=-1, keepdim=True)
-                modified = modified / norm_post * norm_pre
         
         # modified = torch.clamp(modified, output[0]-0.1, output[0]+0.1)
         if isinstance(output, tuple):
@@ -104,8 +88,7 @@ class WrappedBlock(torch.nn.Module):
         
         return output
 
-    def set_controller(self, activations, token_pos=None, masks=None, normalize=False):
-        self.normalize = normalize
+    def set_controller(self, activations, token_pos=None, masks=None):
         self.controller = activations
         self.mask = masks
         self.token_pos = token_pos
@@ -163,11 +146,11 @@ class WrappedReadingVecModel(torch.nn.Module):
                 print("using list")
                 activations[layer_id] = grads[layer_id][:, :, :]
 
-            self.set_controller(layer_id, activations[layer_id], token_pos=token_pos, masks=1, normalize=False)
+            self.set_controller(layer_id, activations[layer_id], token_pos=token_pos, masks=1)
 
 
     def controlled_generate(self,
-                            prompt: str=None,
+                            prompt: List[str]=None,
                             input_ids=None,
                             attention_mask=None,
                             suffix: Union[SuffixItem, List[SuffixItem]]=None,
@@ -175,13 +158,14 @@ class WrappedReadingVecModel(torch.nn.Module):
                             verbalizer=None,
                             coeff=-0.1,
                             iterations=5,
+                            k=1,
+                            max_search_steps=3,
                             token_pos="start",
                             layer_ids=list(range(0, 32, 1)),
                             random_seed=0,
                             consistent=True,
                             use_last=False,
                             use_cache=False,
-                            keep_input=False,
                             smoothing: float = 0,
                             search=False,
                             verbose=False,
@@ -189,8 +173,11 @@ class WrappedReadingVecModel(torch.nn.Module):
                             return_intermediate=False,
                             return_hiddens=False,
                             return_grads=False,
+                            return_logits=False,
+                            return_ids=False,
                             remain_control=False,
                             load_best_last=False,
+                            last_max_new_tokens=None,
                             save_intermediate_states=False,
                             do_sample=False,
                             norm=1,
@@ -208,16 +195,17 @@ class WrappedReadingVecModel(torch.nn.Module):
         self.model.eval()
         self.reset()
         best_loss = float('inf')
-        all_grads = []
+        final_grads = {}
         temp_grads = {}
         acc_grads = {}  # accumulated gradients
         best_grads = {}
         gradient_bs = 1 # TODO: default to 1
+        orig_coeff = coeff
 
         # Prepare inputs
         inputs = {}
         if prompt is not None:
-            inputs = self.tokenizer(prompt, return_tensors="pt")
+            inputs = self.tokenizer(prompt, return_tensors="pt", padding=True)
             inputs["input_ids"] = inputs["input_ids"].to(self.model.device)
             inputs["attention_mask"] = inputs["attention_mask"].to(self.model.device)
             query_length = inputs["input_ids"].size(1)
@@ -228,16 +216,18 @@ class WrappedReadingVecModel(torch.nn.Module):
         if return_intermediate:
             iterative_outputs = []
         controlled_output = self.generate(**inputs, use_cache=use_cache, do_sample=do_sample, **kwargs) # the original output
-        original_output = controlled_output
+        original_output = deepcopy(controlled_output)
         if verbose:
-            print("Original Output:\n", controlled_output)
-            rationale = self.generate(controlled_output+suffix.suffix, use_cache=use_cache, do_sample=do_sample, **kwargs)
-            print("Rationale:\n", rationale)
-            print("="*50)
+            print("Coeff: ", orig_coeff)
+        #     print("Original Output:\n", controlled_output)
+        #     rationale = self.generate([output+suffix.suffix for output in controlled_output], use_cache=use_cache, do_sample=do_sample, **kwargs)
+        #     print("Rationale:\n", rationale)
+        #     print("="*50)
 
-        for iter in tqdm(range(iterations)):
+        for iter in range(iterations):
             # print(controlled_output)
-            controlled_output = controlled_output + suffix.suffix
+            for i in range(len(controlled_output)):
+                controlled_output[i] = controlled_output[i] + suffix.suffix
 
             if isinstance(suffix, list):
                 warnings.warn(f"Accepting a list of suffixes has not been tested right now")
@@ -257,6 +247,7 @@ class WrappedReadingVecModel(torch.nn.Module):
                         verbalizer=verbalizer,
                         smoothing=smoothing,
                         norm=norm,
+                        gradient_manipulation=gradient_manipulation,
                     )
                     composed_grads = {k: (composed_grads[k] + grads[k] * suffix_item.direction) if k in composed_grads else grads[k]\
                                        for k in set(grads)}
@@ -284,35 +275,34 @@ class WrappedReadingVecModel(torch.nn.Module):
             if loss < best_loss:
                 best_loss = loss
                 best_grads = acc_grads
-
             if search:
                 step_size = bidirectional_line_search(
                     orig_input          =   prompt,
                     suffix              =   suffix.suffix,
                     wrapped_model       =   self,
                     acc_grads           =   acc_grads,
-                    initial_step_size   =   0.2,
+                    initial_step_size   =   orig_coeff,
+                    verbose             =   verbose,
+                    max_iterations      =   max_search_steps,
+                    initial_grads_loss  =   {
+                        "grads": grads,
+                        "loss": loss,
+                        "controlled_output": controlled_output
+                    },
                     # control args
-                    model               =   self.model,
                     tokenizer           =   self.tokenizer,
                     target              =   target_token,
                     query_length        =   query_length,
                     verbalizer          =   verbalizer,
                     loss_fct            =   loss_fct,
+                    **kwargs
                 )
                 coeff = step_size
-
             for i in grads:
                 if i in acc_grads:
                     acc_grads[i] = acc_grads[i][:, :query_length] + coeff * grads[i][:, :query_length]
                 else:
                     acc_grads[i] = coeff * grads[i][:, :query_length]
-                if save_intermediate_states:
-                    temp_grads[i] = acc_grads[i].cpu().detach().clone()
-            if save_intermediate_states:
-                print("Saving")
-                all_grads.append(temp_grads)
-                temp_grads = {}
             coeff *= annealing
                     
             self.control_on_layers(
@@ -324,18 +314,18 @@ class WrappedReadingVecModel(torch.nn.Module):
                 epsilon=epsilon
             )
 
-            controlled_output = self.generate(**inputs, keep_input=True, use_cache=use_cache, do_sample=do_sample, **kwargs)
+            controlled_output = self.generate(**inputs, use_cache=use_cache, do_sample=do_sample, **kwargs)
             if not consistent:
                 self.reset()
-            if verbose:
-                print(f"Loss from the iteration {iter}: {loss.item()}")
-                print(f"Output form the iteration {iter}:\n", controlled_output)
-                rationale = self.generate(controlled_output+suffix.suffix, keep_input=False, use_cache=use_cache, do_sample=do_sample, **kwargs)
-                print("Rationale:\n", rationale)
-                print("="*50)
+            # if verbose:
+            #     print(f"Loss from the iteration {iter}: {loss.item()}")
+            #     print(f"Output form the iteration {iter}:\n", controlled_output)
+            #     rationale = self.generate([output + suffix.suffix for output in controlled_output], keep_input=False, use_cache=use_cache, do_sample=do_sample, **kwargs)
+            #     print("Rationale:\n", rationale)
+            #     print("="*50)
             if return_intermediate:
-                iterative_outputs.append(controlled_output)
-        controlled_output = controlled_output + suffix.suffix
+                iterative_outputs.append(deepcopy(controlled_output))
+        controlled_output = [output + suffix.suffix for output in controlled_output]
         grads, outputs, loss, probs, logits, norms = get_verbalized_grads_from_wrapped_model(
             wrapped_model=self,
             tokenizer=self.tokenizer,
@@ -345,10 +335,14 @@ class WrappedReadingVecModel(torch.nn.Module):
             verbalizer=verbalizer,
             smoothing=smoothing,
             norm=norm,
+            gradient_manipulation=gradient_manipulation,
         )
         if loss < best_loss:
             best_loss = loss
             best_grads = acc_grads
+        if save_intermediate_states:
+            for i in best_grads:
+                final_grads[i] = best_grads[i].cpu().detach().clone()
         if load_best_last:
             self.control_on_layers(
                 layer_ids=layer_ids,
@@ -356,20 +350,22 @@ class WrappedReadingVecModel(torch.nn.Module):
                 query_length=query_length,
                 token_pos=token_pos,
             )
-            controlled_output = self.generate(**inputs, keep_input=True, use_cache=use_cache, do_sample=do_sample, **kwargs)
+        if last_max_new_tokens is not None:
+            kwargs.pop("max_new_tokens")
+            controlled_output = self.generate(**inputs, use_cache=use_cache, do_sample=do_sample, return_ids=return_ids, max_new_tokens=last_max_new_tokens, **kwargs) # only pass return_ids here
+        else:
+            controlled_output = self.generate(**inputs, use_cache=use_cache, do_sample=do_sample, return_ids=return_ids, **kwargs) # only pass return_ids here
         # TODO: return a tuple
-        if not remain_control:
+        if return_logits:
+            outputs = self.model(**inputs, output_hidden_states=True)
+            return outputs.logits
+        if not remain_control and not return_hiddens:
             self.reset()
         if save_intermediate_states:
-            return controlled_output, all_grads
+            return controlled_output, final_grads
         if return_grads:
             return controlled_output, best_grads
         if return_hiddens:
-            tokenized = self.tokenizer(prompt, return_tensors="pt")
-            input_ids = tokenized.input_ids
-            attention_mask = torch.ones_like(input_ids)
-            inputs["input_ids"] = input_ids
-            inputs["attention_mask"] = attention_mask
             outputs = self.model(**inputs, output_hidden_states=True)
             return outputs['hidden_states'][1:]
         if return_intermediate:
@@ -379,11 +375,11 @@ class WrappedReadingVecModel(torch.nn.Module):
 
         
     def generate(self,
-                 prompt: str=None,
-                 keep_input=False,
+                 prompt: List[str]=None,
+                 return_ids=False,
                  **kwargs):
         if prompt is not None:
-            inputs = self.tokenizer(prompt, return_tensors="pt")
+            inputs = self.tokenizer(prompt, return_tensors="pt", padding=True)
             inputs["input_ids"] = inputs["input_ids"].to(self.model.device)
             inputs["attention_mask"] = inputs["attention_mask"].to(self.model.device)
             gen_ids = self.model.generate(**inputs, **kwargs)
@@ -396,11 +392,14 @@ class WrappedReadingVecModel(torch.nn.Module):
         #     )
         #     return ground_truth_generation
         # else:
-        ground_truth_generation = self.tokenizer.decode(
-            gen_ids[0],
-            skip_special_tokens=True,
-        )
-        return ground_truth_generation
+        if return_ids:
+            return gen_ids
+        else:
+            ground_truth_generation = self.tokenizer.batch_decode(
+                gen_ids,
+                skip_special_tokens=True,
+            )
+            return ground_truth_generation
         
     def get_past_kvs(self, prompt, **kwargs):
         inputs_embeds = get_sentence_embedding(
@@ -643,50 +642,50 @@ class WrappedReadingVecModel(torch.nn.Module):
             return _get_activations(layer_ids, block_name)
 
 
-    def set_controller(self, layer_ids, activations, block_name='decoder_block', token_pos=None, masks=None, normalize=False):
+    def set_controller(self, layer_ids, activations, block_name='decoder_block', token_pos=None, masks=None):
 
-        def _set_controller(layer_id, activations, block_name, masks, normalize):
+        def _set_controller(layer_id, activations, block_name, masks):
             current_layer = self.model.model.layers[layer_id]
 
             if block_name == 'decoder_block':
-                current_layer.set_controller(activations, token_pos, masks, normalize)
+                current_layer.set_controller(activations, token_pos, masks)
             elif self.is_wrapped(current_layer):
                 current_block = current_layer.block
                 if block_name == 'kv' and self.is_wrapped(current_block.k_proj) and self.is_wrapped(current_block.v_proj):  # to be able to control kv separately
-                    current_block.k_proj.set_controller(activations, token_pos, masks, normalize)
-                    current_block.v_proj.set_controller(activations, token_pos, masks, normalize)
+                    current_block.k_proj.set_controller(activations, token_pos, masks)
+                    current_block.v_proj.set_controller(activations, token_pos, masks)
                 elif block_name == 'self_attn' and self.is_wrapped(current_block.self_attn):
-                    current_block.self_attn.set_controller(activations, token_pos, masks, normalize)
+                    current_block.self_attn.set_controller(activations, token_pos, masks)
                 elif block_name == 'mlp' and self.is_wrapped(current_block.mlp):
-                    current_block.mlp.set_controller(activations, token_pos, masks, normalize)
+                    current_block.mlp.set_controller(activations, token_pos, masks)
                 elif block_name == 'input_layernorm' and self.is_wrapped(current_block.input_layernorm):
-                    current_block.input_layernorm.set_controller(activations, token_pos, masks, normalize)
+                    current_block.input_layernorm.set_controller(activations, token_pos, masks)
                 elif block_name == 'post_attention_layernorm' and self.is_wrapped(current_block.post_attention_layernorm):
-                    current_block.post_attention_layernorm.set_controller(activations, token_pos, masks, normalize)
+                    current_block.post_attention_layernorm.set_controller(activations, token_pos, masks)
                 else:
                     return f"No wrapped block named {block_name}."
 
             else:
                 if block_name == 'kv' and self.is_wrapped(current_layer.self_attn.k_proj) and self.is_wrapped(current_layer.self_attn.v_proj):  # to be able to control kv separately
-                    current_layer.k_proj.set_controller(activations, token_pos, masks, normalize)
-                    current_layer.v_proj.set_controller(activations, token_pos, masks, normalize)
+                    current_layer.k_proj.set_controller(activations, token_pos, masks)
+                    current_layer.v_proj.set_controller(activations, token_pos, masks)
                 if block_name == 'self_attn' and self.is_wrapped(current_layer.self_attn):
-                    current_layer.self_attn.set_controller(activations, token_pos, masks, normalize)
+                    current_layer.self_attn.set_controller(activations, token_pos, masks)
                 elif block_name == 'mlp' and self.is_wrapped(current_layer.mlp):
-                    current_layer.mlp.set_controller(activations, token_pos, masks, normalize)
+                    current_layer.mlp.set_controller(activations, token_pos, masks)
                 elif block_name == 'input_layernorm' and self.is_wrapped(current_layer.input_layernorm):
-                    current_layer.input_layernorm.set_controller(activations, token_pos, masks, normalize)
+                    current_layer.input_layernorm.set_controller(activations, token_pos, masks)
                 elif block_name == 'post_attention_layernorm' and self.is_wrapped(current_layer.post_attention_layernorm):
-                    current_layer.post_attention_layernorm.set_controller(activations, token_pos, masks, normalize)
+                    current_layer.post_attention_layernorm.set_controller(activations, token_pos, masks)
                 else:
                     return f"No wrapped block named {block_name}."
                 
         if isinstance(layer_ids, list) or isinstance(layer_ids, tuple) or isinstance(layer_ids, np.ndarray):
             assert isinstance(activations, dict), "activations should be a dictionary"
             for layer_id in layer_ids:
-                _set_controller(layer_id, activations[layer_id], block_name, masks, normalize)
+                _set_controller(layer_id, activations[layer_id], block_name, masks)
         else:
-            _set_controller(layer_ids, activations, block_name, masks, normalize)
+            _set_controller(layer_ids, activations, block_name, masks)
       
         
     def reset(self):

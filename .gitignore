@@ -11,3 +11,5 @@ results/
 self-control/suffix_gradient/data/
 merged_eval_results/
 delta_ds/
+charts/
+multirun/

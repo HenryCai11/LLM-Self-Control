@@ -5,6 +5,12 @@ from typing import List, Dict, Tuple
 from copy import deepcopy
 from scipy.special import softmax
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from torch.nn.functional import kl_div
+import numpy as np
+
+from torch import nn
+from torch.nn import functional as F
+from torch.func import functional_call, vmap
 # from self_control.suffix_gradient.repe import WrappedReadingVecModel
 
 def loss_over_multiple_next_tokens(model, inputs, loss_fct, targets):
@@ -125,8 +131,9 @@ def get_verbalized_grads_from_wrapped_model(wrapped_model,
                                             loss_fct,
                                             targets,
                                             verbalizer: List[int],
-                                            smoothing=0.5,
+                                            smoothing=0,
                                             norm=1,
+                                            k=1,
                                             gradient_manipulation: str="clipping"
                                             ):
     """
@@ -140,7 +147,16 @@ def get_verbalized_grads_from_wrapped_model(wrapped_model,
     Returns:
     - torch.Tensor: The cross entropy loss.
     """
-    tokenized = tokenizer(inputs, return_tensors="pt")
+    def normalize(x):
+        t = (x ** 2).view(x.shape[0], -1).sum(-1).sqrt()
+
+        return x / (t.view(-1, *([1] * x.shape[1:])) + 1e-12)
+    def L2_norm(x, keepdim=False):
+        z = (x ** 2).view(x.shape[0], -1).sum(-1).sqrt()
+        if keepdim:
+            z = z.view(-1, *[1]*(len(x.shape) - 1))
+        return z
+    tokenized = tokenizer(inputs, return_tensors="pt", padding=True)
     tokenized["input_ids"] = tokenized["input_ids"].to(wrapped_model.model.device)
     tokenized["attention_mask"] = tokenized["attention_mask"].to(wrapped_model.model.device)
     with torch.enable_grad():
@@ -150,8 +166,8 @@ def get_verbalized_grads_from_wrapped_model(wrapped_model,
             attention_mask=tokenized["attention_mask"],
             output_hidden_states=True,
         )
-        one_hot_dist = torch.zeros(1, outputs.logits.shape[-1])
-        one_hot_dist[0, targets[0].cpu().numpy()] = 1
+        one_hot_dist = torch.zeros(outputs.logits.size(0), outputs.logits.shape[-1])
+        one_hot_dist[:, targets[0].cpu().numpy()] = 1
         one_hot_dist = label_smoothing(one_hot_dist, smoothing=smoothing)
         loss = loss_fct(outputs.logits[:, -1, :], one_hot_dist.to(wrapped_model.model.device))
 
@@ -159,7 +175,6 @@ def get_verbalized_grads_from_wrapped_model(wrapped_model,
         norms = {}
         hidden_states = outputs.hidden_states[1:] # outputs.hidden_states[0] is the embedding layer
         if gradient_manipulation == "pgd":
-            # print(hidden_states)
             X_pgd = {}
             for i in range(len(hidden_states)):
                 X_pgd[i] = hidden_states[i].clone()
@@ -173,15 +188,24 @@ def get_verbalized_grads_from_wrapped_model(wrapped_model,
                 norms[i][norm_mask] = 1
                 grads[i] = grads[i] / norms[i]
             elif gradient_manipulation == "pgd":
-                step_size = -1e-3
+                step_size = 0.5
                 epsilon = 0.3
-                eta = step_size * grads[i].data
+                # max_val = torch.max(torch.abs(grads[i]))
+                # grads[i] = grads[i] / max_val
+                # pgd_norm = torch.norm(grads[i], dim=-1, p=2, keepdim=True)
+                # grads[i] = max_val * grads[i] / pgd_norm
+                # norm_mask = norms[i] <= norm
+                # norms[i][norm_mask] = 1
+                eta = step_size * grads[i] / (norms[i] + 1e-12)
                 X_pgd[i] = X_pgd[i].data + eta
-                eta = torch.clamp(X_pgd[i].data - hidden_states[i].data, -epsilon, epsilon)
-                X_pgd[i] = Variable(hidden_states[i].data + eta, requires_grad=True)
+                X_pgd[i] = torch.clamp(X_pgd[i], hidden_states[i] - epsilon, hidden_states[i] + epsilon)
+                # eta = torch.clamp(X_pgd[i].data - hidden_states[i].data, -epsilon, epsilon)
+                # X_pgd[i] = Variable(hidden_states[i].data + eta, requires_grad=True)
                 # X_pgd[i] = Variable(torch.clamp(X_pgd[i], 0, 1.0), requires_grad=True)
                 grads[i] = X_pgd[i] - hidden_states[i]
-
+            elif gradient_manipulation == "autopgd":
+                pass
+        
         # print(grads)
         probs = softmax(outputs.logits[:, -1, verbalizer].detach().cpu().numpy()[0])
         logits = outputs.logits
@@ -200,13 +224,12 @@ def get_verbalized_grads(model, tokenizer, inputs: str, loss_fct, targets, verba
     Returns:
     - torch.Tensor: The cross entropy loss.
     """
-    ground_truth_embeds = get_sentence_embedding(
-        model, tokenizer, inputs
-    )
+    tokenized = tokenizer(inputs, return_tensors="pt", padding=True)
+    tokenized["input_ids"] = tokenized["input_ids"].to(model.model.device)
+    tokenized["attention_mask"] = tokenized["attention_mask"].to(model.model.device)
     outputs = model(
-        inputs_embeds=ground_truth_embeds,
-        # input_ids=inputs["input_ids"],
-        # attention_mask=inputs["attention_mask"],
+        input_ids=tokenized["input_ids"],
+        attention_mask=tokenized["attention_mask"],
         output_hidden_states=True,
     )
     loss = loss_fct(outputs.logits[:, -1, :], targets)
@@ -253,7 +276,7 @@ def control_on_layers(layer_ids, wrapped_model, grads, query_length, token_pos="
             print("using list")
             activations[layer_id] = grads[layer_id][:, :, :]
 
-        wrapped_model.set_controller(layer_id, activations[layer_id], token_pos=token_pos, masks=1, normalize=False)
+        wrapped_model.set_controller(layer_id, activations[layer_id], token_pos=token_pos, masks=1)
 
     return wrapped_model
 
@@ -391,6 +414,9 @@ def bidirectional_line_search(orig_input: str,
                                 loss_threshold: float=1e-5,
                                 max_iterations: int=3,
                                 scale_factor: float=0.5,
+                                initial_grads_loss: Dict=None,
+                                do_sample=False,
+                                verbose=False,
                                 **control_args
                                 ) -> float:
     """
@@ -409,83 +435,90 @@ def bidirectional_line_search(orig_input: str,
         The best step size
     """
     query_length = control_args.pop("query_length")
-    model = control_args.pop("model")
     tokenizer = control_args.pop("tokenizer")
     loss_fct = control_args.pop("loss_fct")
     target = control_args.pop("target")
     verbalizer = control_args.pop("verbalizer")
-
 
     # Initialize variables
     best_loss = float('inf')
     best_step_size = initial_step_size
     current_step_size = initial_step_size
     
-    input_with_suffix = wrapped_model.generate(orig_input, keep_input=True, random_seed=42) + suffix
-    grads, outputs, loss, probs, logits, norms = get_verbalized_grads(
-        inputs=input_with_suffix,
-        model=model,
-        tokenizer=tokenizer,
-        loss_fct=loss_fct,
-        targets=target,
-        verbalizer=verbalizer
-    )
-    for i in range(max_iterations):
-        # Check both directions
-        for direction in [-1, 1]:
-            # Modify the step-size for the current direction
-            test_step_size = direction * current_step_size
+    # grads, outputs, loss, probs, logits, norms = get_verbalized_grads_from_wrapped_model(
+    #     inputs=input_with_suffix,
+    #     wrapped_model=model,
+    #     tokenizer=tokenizer,
+    #     loss_fct=loss_fct,
+    #     targets=target,
+    #     verbalizer=verbalizer
+    # )
 
-            temp_grads = {}
-            for i in grads:
-                if i in acc_grads:
-                    # do max-length padding
-                    max_len = max(grads[i].size(1), acc_grads[i].size(1))
-                    acc_padding_needed = max_len - acc_grads[i].size(1)
-                    grad_padding_needed = max_len - grads[i].size(1)
-                    acc_grads[i] = torch.cat([acc_grads[i], torch.zeros(acc_grads[i].size(0), acc_padding_needed, acc_grads[i].size(2)).to(model.device)], dim=1)
-                    grads[i] = torch.cat([grads[i], torch.zeros(grads[i].size(0), grad_padding_needed, grads[i].size(2)).to(model.device)], dim=1)
-                    temp_grads[i] = acc_grads[i] + test_step_size * grads[i]    # should always use the initial grads
-                else:
-                    temp_grads[i] = test_step_size * grads[i]
-            
-            token_pos = "start"     # control on input tokens by default
-            layer_ids = list(range(0, 32, 1))   # control on all layers by default
-            wrapped_model = control_on_layers(
-                layer_ids=layer_ids,
-                wrapped_model=wrapped_model,
-                grads=temp_grads,
-                query_length=query_length,
-                token_pos=token_pos,
-            )
-            input_with_suffix = wrapped_model.generate(orig_input, keep_input=True, random_seed=42) + suffix
-            _, outputs, loss, probs, logits, norms = get_verbalized_grads(
-                inputs=input_with_suffix,
-                model=model,
-                tokenizer=tokenizer,
-                loss_fct=loss_fct,
-                targets=target,
-                verbalizer=verbalizer
-            )
-            
-            # Check if the loss is better than what we have seen so far
-            if loss < best_loss:
-                best_loss = loss
-                best_step_size = test_step_size
-                
-                # Check if the loss is below the threshold
-                if loss <= loss_threshold:
-                    print(f"Step-size found: {best_step_size}, Loss: {loss}")
-                    return best_step_size
+    # del outputs, probs, logits, norms
+    input_with_suffix = initial_grads_loss["controlled_output"]
+    loss = initial_grads_loss["loss"]
+    grads = initial_grads_loss["grads"]
+
+    if verbose:
+        print(f"Input w/ suffix: {input_with_suffix}")
+        print(f"Initial Loss: {loss}")
+
+    for i in range(max_iterations):
+        test_step_size = current_step_size
+
+        temp_grads = {}
+        for i in grads:
+            if i in acc_grads:
+                temp_grads[i] = acc_grads[i][:, :query_length] + test_step_size * grads[i][:, :query_length]    # should always use the initial grads
+            else:
+                temp_grads[i] = test_step_size * grads[i][:, :query_length]
         
+        token_pos = "start"     # control on input tokens by default
+        layer_ids = list(range(0, 32, 1))   # control on all layers by default
+        wrapped_model = control_on_layers(
+            layer_ids=layer_ids,
+            wrapped_model=wrapped_model,
+            grads=temp_grads,
+            query_length=query_length,
+            token_pos=token_pos,
+        )
+        input_with_suffix = [input + suffix for input in wrapped_model.generate(orig_input, do_sample=do_sample, **control_args)]
+        wrapped_model.reset()
+        _, outputs, loss, probs, logits, norms = get_verbalized_grads_from_wrapped_model(
+            inputs=input_with_suffix,
+            wrapped_model=wrapped_model,
+            tokenizer=tokenizer,
+            loss_fct=loss_fct,
+            targets=target,
+            verbalizer=verbalizer
+        )
+        if verbose:
+            print(f"Input w/ suffix: {input_with_suffix}")
+            print(f"Loss: {loss}")
+
+        del outputs, probs, logits, norms
+        
+        # Check if the loss is better than what we have seen so far
+        if loss < best_loss:
+            best_loss = loss
+            best_step_size = test_step_size
+            
+            # Check if the loss is below the threshold
+            if loss <= loss_threshold:
+                # print(f"Better Step-size found: {best_step_size}, Loss: {loss}")
+                return best_step_size
+        else:
+            # print(f"Step-size found: {test_step_size}, Loss: {loss}")
+            pass
+    
         # If not, scale down the absolute value of the step-size and continue
         current_step_size *= scale_factor
-    
-    print(f"Best step-size found: {best_step_size}, Loss: {best_loss}")
+    if verbose:
+        print(f"Best step-size found: {best_step_size}, Loss: {best_loss}")
     return best_step_size
 
 
-def KL_divergence(p, q, epsilon=1e-12):
+def KL_divergence(p, q, epsilon=1e-9):
     """Compuates KL divergence between two probability distributions
 
     Args:
@@ -510,5 +543,5 @@ def label_smoothing(one_hot_labels, smoothing=0.5):
         np.ndarray: Smoothed labels.
     """
     num_classes = one_hot_labels.shape[1]
-    smooth_labels = (1.0 - smoothing) * one_hot_labels + (smoothing / num_classes)
+    smooth_labels = (1.0 - smoothing) * one_hot_labels + (smoothing / num_classes) * np.ones_like(one_hot_labels)
     return smooth_labels
