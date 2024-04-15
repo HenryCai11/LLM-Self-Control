@@ -8,6 +8,9 @@ outputs/
 *.bin
 wandb/
 results/
+new-results/
+!benchmarks/**/*.json
+!benchmarks/**/*.jsonl
 self-control/suffix_gradient/data/
 merged_eval_results/
 delta_ds/

@@ -17,7 +17,7 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 from torch.utils.data import Dataset, DataLoader
 from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
-from self_control.suffix_gradient.repe import WrappedReadingVecModel
+from self_control.suffix_gradient import WrappedReadingVecModel
 import torch.nn.functional as F
 from peft import AdaptionPromptConfig, get_peft_model, LoraModel, LoraConfig, prepare_model_for_kbit_training
 from self_control.utils import SuffixItem
@@ -84,6 +84,7 @@ parser.add_argument("--init_coeff", type=float, default=-0.5, help="Coefficient 
 parser.add_argument("--iteration", type=int, default=1, help="Number of iterations of control")
 parser.add_argument("--random_seed", type=int, default=42, help="Random seed")
 parser.add_argument("--do_sample", action="store_true")
+parser.add_argument("--temperature", type=float, default=0, help="Temperature")
 parser.add_argument("--return_hiddens", action="store_true")
 args = parser.parse_args()
 
@@ -199,7 +200,7 @@ for _ in range(args.epoch):
         query_len = batch["query_len"]
         input_str = batch["input_str"]
         try:
-            grad_list = wrapped_model.controlled_generate(
+            outputs = wrapped_model.controlled_generate(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 suffix=suffix,
@@ -208,17 +209,18 @@ for _ in range(args.epoch):
                 iterations=args.iteration,
                 random_seed=args.random_seed,
                 smoothing=0,
-                max_new_tokens=200,
+                max_new_tokens=50,
                 return_intermediate=True,
                 return_hiddens=args.return_hiddens,
                 gradient_manipulation="clipping",
-                save_intermediate_states=True if not args.return_hiddens else False,
                 norm=1,
                 annealing=1,
                 use_cache=False,
                 do_sample=do_sample,
+                temperature=args.temperature
             )
             # print(grad_list)
+            grad_list = outputs["hidden_states"]
             if not args.return_hiddens:
                 cleaned_grad_list = clean_padded_gradients(grad_list, query_len)
             else:
@@ -233,5 +235,5 @@ for _ in range(args.epoch):
 
 """
 usage: CUDA_VISIBLE_DEVICES=3 python -m self_control.suffix_gradient.generate_delta_ds --attribute happy --data_path benchmarks/emotions/happiness.json \
-    --output_name happy_search --epoch 5 --search --init_coeff -2 --iteration 2
+    --output_name happy_search --epoch 5 --search --init_coeff -2 --iteration 2 --return_hiddens --do_sample --temperature 0.7
 """

@@ -8,13 +8,10 @@ from torch.utils.data import Dataset
 import argparse
 from datasets import load_dataset
 from transformers import Trainer, TrainingArguments, AutoModelForCausalLM, AutoTokenizer
-from self_control.suffix_gradient.repe import WrappedReadingVecModel
-from self_control.utils import get_verbalized_grads, control_on_layers, get_sentence_embedding
-from peft import AdaptionPromptConfig, LoraConfig, get_peft_model, PeftModel, prepare_model_for_kbit_training, PeftConfig, load_peft_weights, set_peft_model_state_dict
-from trl import DataCollatorForCompletionOnlyLM
+from peft import AdaptionPromptConfig, LoraConfig, get_peft_model
 from transformers import BitsAndBytesConfig
 from typing import List, Dict
-from self_control.utils import bidirectional_line_search, vanilla_control, KL_divergence
+from self_control.utils import vanilla_control, KL_divergence
 # from .arguments import args
 from data.kl_divergence import kl_div_data
 from self_control.utils import SuffixItem
@@ -34,6 +31,7 @@ import hydra
 from omegaconf import DictConfig, OmegaConf
 import json
 from tqdm import tqdm
+from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
 
 os.environ["WANDB_PROJECT"] = "gradient-control"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -48,7 +46,9 @@ torch.cuda.manual_seed_all(random_seed)
 @hydra.main(version_base=None, config_path="./configs", config_name="config")
 def main(cfg):
     hydra_working_dir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
-    args = cfg.emotion_configs
+    args = cfg.training_args
+    model_args = cfg.model
+    attribute_args = cfg.attributes
     config = AdaptionPromptConfig(
         adapter_len=args.adapter_len,
         adapter_layers=args.adapter_layers,
@@ -73,23 +73,18 @@ def main(cfg):
     #     task_type="CAUSAL_LM",
     # )
 
-    print("Name of the adapter: ", args.push_name)
-    model_name_or_path = args.model_name_or_path
+    print("Name of the adapter: ", attribute_args.push_name)
+    model_name_or_path = model_args.model_name_or_path
 
     model = AutoModelForCausalLM.from_pretrained(model_name_or_path, torch_dtype=torch.float32, device_map="auto")
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, padding_side="left")
     tokenizer.pad_token_id = 0 if tokenizer.pad_token_id is None else tokenizer.pad_token_id
     tokenizer.bos_token_id = 1
 
-    # model = prepare_model_for_int8_training(model, use_gradient_checkpointing=True)
-    # model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
-    # model.gradient_checkpointing_enable()
     model.enable_input_require_grads()
     model = get_peft_model(model, config)
 
     model.print_trainable_parameters()
-    # print(model)
-
 
     loss_fct = torch.nn.CrossEntropyLoss()
     user_tag = "[INST]"
@@ -168,22 +163,6 @@ def main(cfg):
         input_ids = inputs.get("input_ids")
         attention_mask = inputs.get("attention_mask")
 
-        # print("Shape of orig_hidden: ", orig_hidden[0].shape)
-        # get target hidden states
-        # with model.disable_adapter():
-        # #     print(model)
-        #     target_orig_outputs = model(
-        #         input_ids=input_ids,
-        #         attention_mask=attention_mask,
-        #         output_hidden_states=True
-        #     )
-        #     target_orig_hidden = target_orig_outputs['hidden_states'][1:]  # remove embedding layer
-        #     target_hidden = torch.stack([target_orig_hidden[l].to(torch.bfloat16) for l in range(len(target_orig_hidden))])  # target shape: (num_layers, bz, seq_len, hidden_dim)
-        #     # adding grads to original hidden states
-        #     for i in range(len(grads)):
-        #         target_hidden[i] = target_hidden[i] + grads[i].to(torch.bfloat16)
-            # del target_orig_outputs
-        # print(model)
         model.train()
         # for now, lora_hidden == ori_hidden
         orig_outputs = model(
@@ -194,14 +173,10 @@ def main(cfg):
 
         orig_hidden = orig_outputs['hidden_states'][1:]  # remove embedding layer
         orig_hidden = torch.stack([orig_hidden[l].to(torch.bfloat16) for l in range(len(orig_hidden))])
-        # assert orig_hidden.shape == target_hidden.shape
-        # target_hidden = torch.stack([target_hidden[l].to(torch.bfloat16) for l in target_layers]).squeeze(dim=1).squeeze(dim=0)
+
         target_hidden = torch.stack([grads[l].to(torch.bfloat16) for l in target_layers])
         orig_hidden = torch.stack([orig_hidden[l].to(torch.bfloat16) for l in target_layers])
-        # print("Orig shape: ", orig_hidden.shape)
-        # print("Target shape: ", target_hidden.shape)
-        # assert orig_hidden[0].size(1) == target_hidden[0].size(1)
-        # orig_hidden = apply_attention_mask(orig_hidden, attention_mask)
+
         loss = torch.norm(target_hidden - orig_hidden, p=2, dim=-1).nanmean() # shape: (bz, num_layers, seq_len)
         # masked_norms = norms * attention_mask
         # # Calculate the sum of the norms and the number of non-padded positions
@@ -214,7 +189,7 @@ def main(cfg):
             kl_loss = get_kl_divergence(model, tokenizer)
             print(f"KL: {kl_loss}")
             self.log({"kl": kl_loss})
-            loss += kl_loss / args.accumulation_steps
+            loss += kl_loss / training_args.accumulation_steps
 
         return (loss, orig_hidden) if return_outputs else loss
 
@@ -295,40 +270,6 @@ def main(cfg):
             self.log(metrics)
             return metrics
 
-        
-        # def evaluate(self, **kwargs):
-        #     self.model.eval()
-        #     wrapped_model = WrappedReadingVecModel(self.model, tokenizer)
-        #     eval_dataset = self.eval_dataset
-        #     target_tokens = self.tokenizer.encode("Yes", add_special_tokens=False, return_tensors='pt').squeeze(0)
-        #     neg_target_tokens = self.tokenizer.encode("No", add_special_tokens=False, return_tensors='pt').squeeze(0)
-        #     verbalizer = [neg_target_tokens[0], target_tokens[0]]
-        #     target = (target_tokens * torch.ones(args.batchsize).long()).to(model.device)
-        #     total_loss = 0
-        #     for eval_data in eval_dataset:
-        #         orig_input = eval_data["input_str"]
-        #         input_with_suffix = wrapped_model.generate(orig_input, keep_input=True, random_seed=42, use_cache=False) + self.suffix
-        #         print(wrapped_model.generate("hi", keep_input=True))
-        #         print(input_with_suffix)
-        #         grads, outputs, loss, probs, logits, norms = get_verbalized_grads(
-        #             inputs=input_with_suffix,
-        #             model=model,
-        #             tokenizer=tokenizer,
-        #             loss_fct=loss_fct,
-        #             targets=target,
-        #             verbalizer=verbalizer
-        #         )
-        #         print(loss, probs)
-        #         total_loss += loss.item()
-        #     print(total_loss)
-        #     avg_loss = total_loss / len(eval_dataset)
-        #     print(f"The averaged loss is {avg_loss}")
-        #     for name, param in model.named_parameters():
-        #         if param.requires_grad:
-        #             print(f"Parameter: {name}, requires_grad: {param.requires_grad}")
-        #     self.model.train()
-        #     return {'eval_loss': avg_loss}
-
     def pad_gradients(gradients, max_length):
         """
         Pad the gradients in a dictionary to the specified maximum length.
@@ -374,20 +315,8 @@ def main(cfg):
         attention_mask_list = [item['attention_mask'] for item in batch]
         grads_list = [item['gradients'] for item in batch]
         # Pad input_ids and attention_mask with left padding
-        # inputs = tokenizer(input_str_list, return_tensors='pt', padding=True)
         padded_input_ids = pad_sequences_left(input_ids_list, pad_value=0)  # Assuming 0 is the padding value for input_ids
         padded_attention_mask = pad_sequences_left(attention_mask_list, pad_value=0)  # Assuming 0 is the padding value for attention_mask
-        # padded_input_ids = inputs['input_ids']
-        # padded_attention_mask = inputs['attention_mask']
-        # Find the maximum length of gradients in the batch and pad grads
-        # max_grad_length = max(
-        #     max(grad.size(1) for grad in grads.values())
-        #     for grads in grads_list
-        # )
-        # print(grads_list[0][0][0])
-        # padded_grads_list = [pad_gradients(grads, max_grad_length) for grads in grads_list]
-        # padded_grads_list = resize_gradients(padded_grads_list)
-        # padded_grads_list = torch.stack([grad for grad in grads_list])
         padded_grads_list = grads_list[0]
         # print(padded_grads_list.shape)
         # print(padded_grads_list[0][0])
@@ -458,28 +387,17 @@ def main(cfg):
 
         def __getitem__(self, idx):
             # Load data on-the-fly
-            # with open(self.pickle_file, 'rb') as file:
-            #     # Using the offset to split data
-            #     for _ in range(int(self.proportion[0] * self.data_count)):
-            #         data_item = pickle.load(file)
-            #     for _ in range(idx + 1):
-            #         data_item = pickle.load(file)
             data_item = self.data[idx]
             input_str = data_item[0]
             grads = torch.stack([grad for grad in data_item[1]]).cpu()
             # grads = data_item[1].cpu()
             if len(grads.shape) == 3:
                 grads = grads.unsqueeze(dim=1)
-            # if len(grads[0].shape) == 2:
-            #     for i, grad in grads.items():
-            #         grads[i] = grad.unsqueeze(dim=0)
+
             inputs = self.tokenizer(input_str, return_tensors="pt")
             inputs["input_ids"] = inputs["input_ids"]
             inputs["attention_mask"] = inputs["attention_mask"]
 
-            # size of input_ids: (1, seq_len)
-            # size of grads: (1, seq_len, hidden_dim)
-            # assert inputs["input_ids"].size(1) == grads[0].size(1), f"Input size: {inputs['input_ids'].size(1)}, grad size: {grads[0].size(1)}"
             return {
                 "gradients": grads,
                 "input_ids": inputs["input_ids"],
@@ -493,14 +411,14 @@ def main(cfg):
 
     happy_splits = {
         "train": TestDataset(happy_data[:100], tokenizer),
-        "eval": TestDataset(happy_data[100:110], tokenizer),
-        "test": TestDataset(happy_data[110:], tokenizer)
+        "eval": TestDataset(happy_data[100:120], tokenizer),
+        "test": TestDataset(happy_data[120:], tokenizer)
     }
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
     parent_dir = os.path.dirname(script_dir)
-    train_pickle_path = os.path.join(parent_dir, f"suffix_gradient/delta_ds/{args.training_set_name}.pkl")
-    eval_pickle_path = os.path.join(parent_dir, f"suffix_gradient/delta_ds/{args.eval_set_name}.pkl")
+    train_pickle_path = os.path.join(parent_dir, f"suffix_gradient/delta_ds/{attribute_args.training_set_name}.pkl")
+    eval_pickle_path = os.path.join(parent_dir, f"suffix_gradient/delta_ds/{attribute_args.eval_set_name}.pkl")
     print(f"Training data: {train_pickle_path}")
     print(f"Eval data: {eval_pickle_path}")
     train_dataset = SuffixControlDataset(pickle_file=train_pickle_path, tokenizer=tokenizer, model=model)
@@ -512,29 +430,25 @@ def main(cfg):
         evaluation_strategy=eval_log_strategy,
         logging_strategy=eval_log_strategy,
         logging_steps=eval_log_steps,
-        # eval_steps=args.eval_step,
+        eval_steps=eval_log_steps,
         learning_rate=args.lr,
         per_device_train_batch_size=args.batchsize,
         per_device_eval_batch_size=args.batchsize,
-        num_train_epochs=args.epoch,
-        gradient_accumulation_steps=args.accumulation_steps,
-        weight_decay=0.02,
-        run_name=args.run_name,
-        max_grad_norm=None,
-        # fp16=True,
-        # gradient_checkpointing=True,
+        # num_train_epochs=args.epoch,
+        max_steps=args.max_steps,
+        gradient_accumulation_steps=attribute_args.accumulation_steps,
+        weight_decay=args.weight_decay,
+        run_name=attribute_args.run_name,
+        max_grad_norm=1,
         remove_unused_columns=False,
-        # lr_scheduler_type=args.schedule_type,
-        # warmup_ratio=args.warmup,
         do_eval=do_eval,
+        save_steps=eval_log_steps,
         save_strategy=eval_log_strategy,
-        # load_best_model_at_end=True,
     )
-    num_warmup_steps = int(training_args.num_train_epochs * len(train_dataset) / (training_args.per_device_train_batch_size * training_args.gradient_accumulation_steps) * args.warmup)
-    num_training_steps = int(training_args.num_train_epochs * len(train_dataset) / (training_args.per_device_train_batch_size * training_args.gradient_accumulation_steps))
+    num_warmup_steps = int(training_args.max_steps * args.warmup)
+    num_training_steps = int(training_args.max_steps)
     print(num_warmup_steps)
     print(num_training_steps)
-    # optimizer = SGD(model.parameters(), lr=3e-5)
     optimizer = AdamW(model.parameters(), lr=training_args.learning_rate)
     if num_warmup_steps == 0:
         scheduler = get_constant_schedule(
@@ -546,13 +460,13 @@ def main(cfg):
             num_warmup_steps=num_warmup_steps
         )
 
-    print(f"Batchsize: {args.batchsize * args.accumulation_steps}")
-    if args.attribute == "happy":
+    print(f"Batchsize: {args.batchsize * attribute_args.accumulation_steps}")
+    if attribute_args.attribute == "happy":
         suffix = SuffixItem(suffix=f" {user_tag} Are you sad? Give answer as \"No, I am happy\" or \"Yes, I am sad\". {assistant_tag} Answer: ", target="Yes")
-    elif args.attribute == "reasoning":
+    elif attribute_args.attribute == "reasoning":
         suffix = SuffixItem(suffix=f" {user_tag} Was your above reasoning and anwer accurate? Give answer as \"Yes, it was accurate\" or \"No, it was not accurate\". {assistant_tag} Answer: ", target="Yes")
     else:
-        raise ValueError(f"Attribute {args.attribute} is not supported.")
+        raise ValueError(f"Attribute {attribute_args.attribute} is not supported.")
     print("Using suffix: ", suffix.suffix)
     trainer = CustomTrainer(
         model=model,
@@ -562,16 +476,16 @@ def main(cfg):
         eval_dataset=eval_dataset,
         suffix=suffix,
         data_collator=collate_fn,
-        optimizers=(optimizer, scheduler)
-        # callbacks=[SavePeftModelCallback],
+        optimizers=(optimizer, scheduler),
     )
     trainer.evaluate()
     trainer.train()
     trainer.evaluate(final_test=True, target_dir=hydra_working_dir)
 
-    model.save_pretrained("../final_adapter")
-    model.push_to_hub(f"HenryCai1129/{args.push_name}")
+    trainer.model.save_pretrained("../final_adapter")
+    trainer.model.push_to_hub(f"HenryCai1129/{attribute_args.push_name}")
+    torch.cuda.empty_cache()
+    del model, trainer
     gc.collect()
-
 if __name__ == "__main__":
     main()

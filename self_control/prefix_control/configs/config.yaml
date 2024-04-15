@@ -1,2 +1,4 @@
 defaults:
-  - emotion_configs: emo-100-3e-4
+  - attributes: happy-100
+  - model: llama2
+  - training_args: llama-adapter

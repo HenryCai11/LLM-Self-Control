@@ -133,7 +133,7 @@ def get_verbalized_grads_from_wrapped_model(wrapped_model,
                                             verbalizer: List[int],
                                             smoothing=0,
                                             norm=1,
-                                            k=1,
+                                            step_size=1,
                                             gradient_manipulation: str="clipping"
                                             ):
     """
@@ -186,22 +186,12 @@ def get_verbalized_grads_from_wrapped_model(wrapped_model,
             if gradient_manipulation == "clipping":
                 norm_mask = norms[i] <= norm
                 norms[i][norm_mask] = 1
-                grads[i] = grads[i] / norms[i]
+                grads[i] = grads[i] / (norms[i] + 1e-12)
             elif gradient_manipulation == "pgd":
-                step_size = 0.5
                 epsilon = 0.3
-                # max_val = torch.max(torch.abs(grads[i]))
-                # grads[i] = grads[i] / max_val
-                # pgd_norm = torch.norm(grads[i], dim=-1, p=2, keepdim=True)
-                # grads[i] = max_val * grads[i] / pgd_norm
-                # norm_mask = norms[i] <= norm
-                # norms[i][norm_mask] = 1
                 eta = step_size * grads[i] / (norms[i] + 1e-12)
                 X_pgd[i] = X_pgd[i].data + eta
                 X_pgd[i] = torch.clamp(X_pgd[i], hidden_states[i] - epsilon, hidden_states[i] + epsilon)
-                # eta = torch.clamp(X_pgd[i].data - hidden_states[i].data, -epsilon, epsilon)
-                # X_pgd[i] = Variable(hidden_states[i].data + eta, requires_grad=True)
-                # X_pgd[i] = Variable(torch.clamp(X_pgd[i], 0, 1.0), requires_grad=True)
                 grads[i] = X_pgd[i] - hidden_states[i]
             elif gradient_manipulation == "autopgd":
                 pass
@@ -406,7 +396,7 @@ def vanilla_control(model: AutoModelForCausalLM,
     )
     return wrapped_model, acc_grads, loss, probs
 
-def bidirectional_line_search(orig_input: str,
+def search_step_size(orig_input: str,
                                 suffix: str,
                                 wrapped_model,
                                 acc_grads: Dict={},
@@ -417,10 +407,11 @@ def bidirectional_line_search(orig_input: str,
                                 initial_grads_loss: Dict=None,
                                 do_sample=False,
                                 verbose=False,
+                                gradient_manipulation="clipping",
                                 **control_args
                                 ) -> float:
     """
-    Bidirectional line search algorithm to find an optimal step-size that minimizes the loss function.
+    A search algorithm to find an optimal step-size that minimizes the loss function.
     
     Params:
         orig_input: The original input sentence
@@ -490,7 +481,8 @@ def bidirectional_line_search(orig_input: str,
             tokenizer=tokenizer,
             loss_fct=loss_fct,
             targets=target,
-            verbalizer=verbalizer
+            verbalizer=verbalizer,
+            gradient_manipulation=gradient_manipulation,
         )
         if verbose:
             print(f"Input w/ suffix: {input_with_suffix}")
