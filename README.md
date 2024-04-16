@@ -1,6 +1,42 @@
 # LLM Control
 The repo for llm control
 
+## Getting Started
+
+### Suffix Gradient
+
+```python
+from self_control.suffix_gradient import WrappedModel
+from self_control.utils import SuffixItem
+model = ...
+tokenizer = ...
+
+# prepare wrapped model
+wrapped_model = WrappedModel(model.eval(), tokenizer)
+
+# prepare control 
+loss_fct = torch.nn.CrossEntropyLoss()
+prompt = "You find that you are the winner of a contest"
+user_tag = "[INST]"
+assistant_tag = "[/INST]"
+suffix = SuffixItem(suffix=f" {user_tag} Are you sad? Give answer as \"No, I am happy\" or \"Yes, I am sad\". {assistant_tag} Answer: ", target="Yes")
+
+# start control
+output_dict = wrapped_model.controlled_generate(
+    prompt=prompt,
+    suffix=suffix,
+    loss_fct=loss_fct,
+    coeff=-1,
+    iterations=2,
+    max_new_tokens=50,
+    return_intermediate=True,
+    search=True,
+    load_best_last=True,
+    gradient_manipulation="clipping",
+)
+print(output_dict["final_responses"])
+```
+
 ## Experiments TODOs
 
 ### Main Results
