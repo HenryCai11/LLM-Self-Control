@@ -205,6 +205,7 @@ class WrappedReadingVecModel(torch.nn.Module):
         gradient_bs = 1 # TODO: default to 1
         orig_coeff = coeff
         final_output_dict = {}
+        norm_list = []
 
         # Prepare inputs
         inputs = {}
@@ -223,10 +224,10 @@ class WrappedReadingVecModel(torch.nn.Module):
         original_output = deepcopy(controlled_output)
         if verbose:
             print("Coeff: ", orig_coeff)
-        #     print("Original Output:\n", controlled_output)
-        #     rationale = self.generate([output+suffix.suffix for output in controlled_output], use_cache=use_cache, do_sample=do_sample, **kwargs)
-        #     print("Rationale:\n", rationale)
-        #     print("="*50)
+            print("Original Output:\n", controlled_output)
+            rationale = self.generate([output+suffix.suffix for output in controlled_output], use_cache=use_cache, do_sample=do_sample, **kwargs)
+            print("Rationale:\n", rationale)
+            print("="*50)
 
         for iter in range(iterations):
             # print(controlled_output)
@@ -278,16 +279,24 @@ class WrappedReadingVecModel(torch.nn.Module):
                     gradient_manipulation=gradient_manipulation,
                 )
 
+            test_grads = {}
+            for i in grads:
+                test_grads[i] = grads[i].clone()
+            # save norms
+            norm_list.append(norms)
+
             if loss < best_loss:
                 best_loss = loss
                 best_grads = acc_grads
             if search:
-                step_size = search_step_size(
-                    orig_input              =   prompt,
+                step_size, best_loss = search_step_size(
+                    orig_input              =   inputs,
                     suffix                  =   suffix.suffix,
+                    random_seed             =   random_seed,
                     wrapped_model           =   self,
                     acc_grads               =   acc_grads,
                     initial_step_size       =   orig_coeff,
+                    layer_ids               =   layer_ids,
                     verbose                 =   verbose,
                     max_iterations          =   max_search_steps,
                     initial_grads_loss      =   {
@@ -295,6 +304,7 @@ class WrappedReadingVecModel(torch.nn.Module):
                         "loss": loss,
                         "controlled_output":    controlled_output
                     },
+                    smoothing               =   smoothing,
                     gradient_manipulation   =   gradient_manipulation,
                     # control args
                     tokenizer               =   self.tokenizer,
@@ -304,6 +314,7 @@ class WrappedReadingVecModel(torch.nn.Module):
                     loss_fct                =   loss_fct,
                     **kwargs
                 )
+                self.reset()
                 coeff = step_size
                 if gradient_manipulation == "pgd":  # TODO: optimize this
                     grads, outputs, loss, probs, logits, norms = get_verbalized_grads_from_wrapped_model(
@@ -318,8 +329,11 @@ class WrappedReadingVecModel(torch.nn.Module):
                         step_size=coeff,
                         gradient_manipulation=gradient_manipulation,
                     )
+                loss = best_loss
             if gradient_manipulation == "pgd":  # If pgd then it's already controlled with the step size
                 coeff = 1
+            for i in test_grads:
+                assert torch.equal(test_grads[i], grads[i])
             for i in grads:
                 if i in acc_grads:
                     acc_grads[i] = acc_grads[i][:, :query_length] + coeff * grads[i][:, :query_length]
@@ -328,8 +342,8 @@ class WrappedReadingVecModel(torch.nn.Module):
             coeff *= annealing
             if return_all_grads:
                 temp_grads = {}
-                for i in acc_grads:
-                    temp_grads[i] = acc_grads[i].detach().cpu().clone()
+                for i in grads:
+                    temp_grads[i] = grads[i].detach().cpu().clone()
                 grad_list.append(temp_grads)
                 del temp_grads
             self.control_on_layers(
@@ -344,12 +358,13 @@ class WrappedReadingVecModel(torch.nn.Module):
             controlled_output = self.generate(**inputs, use_cache=use_cache, do_sample=do_sample, **kwargs)
             if not consistent:
                 self.reset()
-            # if verbose:
-            #     print(f"Loss from the iteration {iter}: {loss.item()}")
-            #     print(f"Output form the iteration {iter}:\n", controlled_output)
-            #     rationale = self.generate([output + suffix.suffix for output in controlled_output], keep_input=False, use_cache=use_cache, do_sample=do_sample, **kwargs)
-            #     print("Rationale:\n", rationale)
-            #     print("="*50)
+            if verbose:
+                print(f"Loss from the iteration {iter}: {loss.item()}")
+                print(f"Best step-size from the iteration {iter}: {coeff}")
+                print(f"Output form the iteration {iter}:\n", controlled_output)
+                rationale = self.generate([output + suffix.suffix for output in controlled_output], do_sample=do_sample, **kwargs)
+                print("Rationale:\n", rationale)
+                print("="*50)
             if return_intermediate:
                 iterative_outputs.append(deepcopy(controlled_output))
         controlled_output = [output + suffix.suffix for output in controlled_output]
@@ -362,6 +377,7 @@ class WrappedReadingVecModel(torch.nn.Module):
             verbalizer=verbalizer,
             smoothing=smoothing,
             norm=norm,
+            step_size=coeff,
             gradient_manipulation=gradient_manipulation,
         )
         if loss < best_loss:
@@ -398,6 +414,7 @@ class WrappedReadingVecModel(torch.nn.Module):
             final_output_dict["intermediate_outputs"] = [original_output] + iterative_outputs
         if return_all_grads:
             final_output_dict["all_grads"] = grad_list
+        final_output_dict["norms"] = norm_list
 
         return final_output_dict
 

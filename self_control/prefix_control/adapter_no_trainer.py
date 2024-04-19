@@ -13,12 +13,11 @@ from torch.utils.data import Dataset
 import argparse
 from datasets import load_dataset
 from transformers import Trainer, TrainingArguments, AutoModelForCausalLM, AutoTokenizer
-from self_control.suffix_gradient.repe import WrappedReadingVecModel
 from self_control.utils import get_verbalized_grads, control_on_layers, get_sentence_embedding
 from peft import AdaptionPromptConfig, LoraConfig, get_peft_model, PeftModel, prepare_model_for_kbit_training, PeftConfig, load_peft_weights, set_peft_model_state_dict
 from transformers import BitsAndBytesConfig
 from typing import List, Dict
-from self_control.utils import bidirectional_line_search, vanilla_control, KL_divergence
+from self_control.utils import vanilla_control, KL_divergence
 from .arguments import args
 from data.kl_divergence import kl_div_data
 from self_control.utils import SuffixItem
@@ -50,21 +49,58 @@ torch.manual_seed(random_seed)
 torch.cuda.manual_seed_all(random_seed)
 
 class SuffixControlDataset(Dataset):
-    def __init__(self, tokenizer, data_list):
+    def __init__(self, pickle_file, tokenizer, model):
         self.tokenizer = tokenizer
-        self.data_list = data_list
+        self.model = model
+        self.pickle_file = pickle_file
+        # Count the number of data items in the pickle file
+        self.data = self.load_data()
+
+    def load_data(self):
+        data = []
+        with open(self.pickle_file, 'rb') as file:
+            while True:
+                try:
+                    data_item = pickle.load(file)
+                    data.append(data_item)
+                except EOFError:
+                    break
+        print("Length of data: ", len(data))
+        return data
+
+    def count_data_items(self):
+        count = 0
+        with open(self.pickle_file, 'rb') as file:
+            while True:
+                try:
+                    pickle.load(file)
+                    count += 1
+                except EOFError:
+                    break
+        print(f"The file has {count} data")
+        return count
 
     def __len__(self):
-        return len(self.data_list)
+        # return int(self.data_count * (self.proportion[1] - self.proportion[0]))
+        return len(self.data)
 
     def __getitem__(self, idx):
-        tokenized_inputs = self.tokenizer(f"Q: {self.data_list[idx]}\nA: ", return_tensors="pt")
-        input_ids = tokenized_inputs["input_ids"]
-        attention_mask = tokenized_inputs["attention_mask"]
-        input_str = f"Q: {self.data_list[idx]}\nA: "
+        # Load data on-the-fly
+        data_item = self.data[idx]
+        input_str = data_item[0]
+        grads = torch.stack([grad for grad in data_item[1]]).cpu()
+        # grads = data_item[1].cpu()
+        if len(grads.shape) == 3:
+            grads = grads.unsqueeze(dim=1)
+
+        inputs = self.tokenizer(input_str, return_tensors="pt")
+        inputs["input_ids"] = inputs["input_ids"]
+        inputs["attention_mask"] = inputs["attention_mask"]
+
         return {
-            "input_ids": input_ids,
-            "attention_mask": attention_mask,
+            "gradients": grads,
+            "input_ids": inputs["input_ids"],
+            "attention_mask": inputs["attention_mask"],
             "input_str": input_str
         }
 
@@ -85,13 +121,36 @@ model = get_peft_model(model, config)
 
 model.print_trainable_parameters()
 
+def resize_gradients(batch):
+    """
+    Resize gradients and accumulate them into a tuple of tensors. Resize gradients from (bz, num_layers, 1, seq_len, hidden_size) to (num_layers, bz, seq_len, hidden_size)
+
+    Args:
+    - batch (list of dicts): Batch of data where each item is a dictionary of gradients.
+
+    Returns:
+    - tuple of torch.Tensor: Resized gradients accumulated in a tuple.
+    """
+    # Initialize a list to hold the tuples of tensors for each layer
+    tensors_of_layers = [list() for _ in range(len(batch[0]))]
+
+    for item in batch:
+        for i, grad in enumerate(item):
+            # Remove the singleton dimension and permute to the desired shape
+            resized_grad = grad.squeeze(0)
+            # Accumulate the tensors for each layer in a tuple
+            tensors_of_layers[i].append(resized_grad)
+    stacked_tensors = torch.stack([torch.stack(layer_tensors) for layer_tensors in tensors_of_layers])
+    # print(stacked_tensors[0][0])
+    return stacked_tensors
+
 def compute_loss(model, inputs, target_layers: List, alpha: float, return_outputs=False, do_train=True, **kwargs):
     """
     Compute loss for 'quasi-meta-train'
     """
     model.eval()
     # TODO: make sure this is correct
-    grads = inputs.get("gradients")[0].to(model.device) # size: (num_layers, bz, seq_len, hidden_dim)
+    grads = inputs.get("gradients").to(model.device) # size: (num_layers, bz, seq_len, hidden_dim)
     input_ids = inputs.get("input_ids").to(model.device)
     attention_mask = inputs.get("attention_mask").to(model.device)
 
@@ -111,15 +170,16 @@ def compute_loss(model, inputs, target_layers: List, alpha: float, return_output
     # assert orig_hidden.shape == target_hidden.shape
     # target_hidden = torch.stack([target_hidden[l].to(torch.bfloat16) for l in target_layers]).squeeze(dim=1).squeeze(dim=0)
     target_hidden = torch.stack([grads[l].to(torch.bfloat16).detach() for l in target_layers])
-    orig_hidden = torch.stack([orig_hidden[l] for l in target_layers])
+    orig_hidden = torch.stack([orig_hidden[l].to(torch.bfloat16) for l in target_layers])
 
-    loss = torch.norm(target_hidden - orig_hidden, p=2, dim=-1).nanmean() # shape: (bz, num_layers, seq_len)
-    # masked_norms = norms * attention_mask
-    # # Calculate the sum of the norms and the number of non-padded positions
-    # norm_sum = masked_norms.sum()
-    # num_non_padded = attention_mask.sum()
-    # # Compute the mean over non-padded positions
-    # loss = norm_sum / num_non_padded
+    norms = torch.norm(target_hidden - orig_hidden, p=2, dim=-1) # shape: (bz, num_layers, seq_len)
+    masked_norms = norms * attention_mask
+    # Calculate the sum of the norms and the number of non-padded positions
+    norm_sum = masked_norms.sum()
+    num_non_padded = attention_mask.sum()
+    # Compute the mean over non-padded positions
+    loss = norm_sum / num_non_padded
+    loss = loss / input_ids.size(1)
 
     # if args.add_kl and do_train:
     #     kl_loss = get_kl_divergence(model, tokenizer)
@@ -187,6 +247,28 @@ def pad_gradients(gradients, max_length):
         padded_gradients[key] = padded_grad
     return padded_gradients
 
+def pad_gradients(gradients, max_length):
+    """
+    Pad the gradients in a dictionary to the specified maximum length.
+    
+    Args:
+    - gradients (dict): A dictionary where keys are parameter names and values are gradient tensors.
+    - max_length (int): The length to which the gradients should be padded.
+
+    Returns:
+    - Tensor: padded gradients.
+    """
+    padded_gradients = {}
+    for key, grad in enumerate(gradients):
+        pad_size = max_length - grad.size(1)
+        if pad_size > 0:
+            pad_tensor = torch.zeros(grad.size(0), pad_size, *grad.size()[2:], dtype=grad.dtype, device=grad.device) # size: (bz, pad_size, hidden_dim)
+            padded_grad = torch.cat([pad_tensor, grad], dim=1)
+        else:
+            padded_grad = grad
+        padded_gradients[key] = padded_grad
+    return torch.stack([grad for grad in padded_gradients.values()])
+
 def pad_sequences_left(sequences, pad_value=0):
     """
     Pad a list of sequences with left padding.
@@ -213,6 +295,13 @@ def collate_fn(batch):
     padded_input_ids = pad_sequences_left(input_ids_list, pad_value=0)  # Assuming 0 is the padding value for input_ids
     padded_attention_mask = pad_sequences_left(attention_mask_list, pad_value=0)  # Assuming 0 is the padding value for attention_mask
     padded_grads_list = grads_list[0]
+    max_grad_length = max(
+        max(grad.size(1) for grad in grads)
+        for grads in grads_list
+    )
+    # print(grads_list[0][0][0])
+    padded_grads_list = [pad_gradients(grads, max_grad_length) for grads in grads_list]
+    padded_grads_list = resize_gradients(padded_grads_list)
     assert padded_input_ids.size(1) == padded_grads_list.size(2)
 
     return {
@@ -241,65 +330,6 @@ class TestDataset(Dataset):
             "attention_mask": inputs["attention_mask"]
         }
 
-class SuffixControlDataset(Dataset):
-    def __init__(self, pickle_file, tokenizer, model):
-        self.tokenizer = tokenizer
-        self.model = model
-        self.pickle_file = pickle_file
-        # Count the number of data items in the pickle file
-        self.data = self.load_data()
-
-    def load_data(self):
-        data = []
-        with open(self.pickle_file, 'rb') as file:
-            while True:
-                try:
-                    data_item = pickle.load(file)
-                    data.append(data_item)
-                except EOFError:
-                    break
-        print("Length of data: ", len(data))
-        return data
-
-    def count_data_items(self):
-        count = 0
-        with open(self.pickle_file, 'rb') as file:
-            while True:
-                try:
-                    pickle.load(file)
-                    count += 1
-                except EOFError:
-                    break
-        print(f"The file has {count} data")
-        return count
-
-    def __len__(self):
-        return len(self.data)
-
-    def __getitem__(self, idx):
-        data_item = self.data[idx]
-        input_str = data_item[0]
-        grads = torch.stack([grad for grad in data_item[1]]).cpu()
-        # grads = data_item[1].cpu()
-        if len(grads.shape) == 3:
-            grads = grads.unsqueeze(dim=1)
-        # if len(grads[0].shape) == 2:
-        #     for i, grad in grads.items():
-        #         grads[i] = grad.unsqueeze(dim=0)
-        inputs = self.tokenizer(input_str, return_tensors="pt")
-        inputs["input_ids"] = inputs["input_ids"][0]
-        inputs["attention_mask"] = inputs["attention_mask"][0]
-
-        # size of input_ids: (1, seq_len)
-        # size of grads: (1, seq_len, hidden_dim)
-        # assert inputs["input_ids"].size(1) == grads[0].size(1), f"Input size: {inputs['input_ids'].size(1)}, grad size: {grads[0].size(1)}"
-        return {
-            "gradients": grads,
-            "input_ids": inputs["input_ids"],
-            "attention_mask": inputs["attention_mask"],
-            "input_str": input_str
-        }
-
 happy_data = []
 with open("/home/cmin/LLM-Interpretation-Playground/benchmarks/emotions/happiness.json", 'r') as f:
     happy_data = eval(f.read())
@@ -322,9 +352,9 @@ eval_dataset = SuffixControlDataset(pickle_file=eval_pickle_path, tokenizer=toke
 # Set up training parameters
 max_steps = 50
 warmup = 0.2
-batch_size = 1
+batch_size = 32
 learning_rate = 3e-3
-accumulation_steps = 100
+accumulation_steps = 1
 wandb.init(project="gradient-control", name="Run-name", config={
     "learning_rate": learning_rate,
     "batch_size": batch_size,
@@ -334,8 +364,8 @@ wandb.init(project="gradient-control", name="Run-name", config={
 # Define a custom training function
 # def train(model, train_dataset, eval_dataset, tokenizer, epochs, batch_size, learning_rate):
 # Create data loaders
-train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-eval_loader = DataLoader(eval_dataset, batch_size=batch_size, shuffle=False)
+train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=True, collate_fn=collate_fn)
+eval_loader = DataLoader(eval_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
 
 num_warmup_steps = int(max_steps * warmup)
 # Set up the optimizer

@@ -16,9 +16,12 @@ from openai import OpenAI
 client = OpenAI(api_key="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")
 
 SEED_PROMPT = {
-    'happy': """Give me 20 queries and the corresponding super **happy** responses. Please generate with the following format and output a blank line after each response:
-[INST] {your query here}
-[/INST] {your response here}"""
+    'happy': """[INST] A surprise picnic is set up for you at a local park.
+
+[INST] You find that you are the winner of a contest.
+
+Above are some queries that may lead to happy responses. Please generate 100 such queries with the following format and output a blank line after each response:
+[INST] {your query here}"""
 }
 
 parser = argparse.ArgumentParser()
@@ -64,18 +67,19 @@ def generate_seed_queries(num_queries) -> List[Tuple[str]]:
             time.sleep(1)
         if done:
             break
-    pattern = r'\[INST\](.*?)\[\/INST\]'
-    matches = re.findall(pattern, gpt_response, re.DOTALL)
-    response_pattern = r'\[\/INST\](.*?)(?=\[INST\]|$)'
+    # pattern = r'\[INST\](.*?)'
+    # matches = re.findall(pattern, gpt_response, re.DOTALL)
+    response_list = gpt_response.split('\n')
+    # response_pattern = r'\[\/INST\](.*?)(?=\[INST\]|$)'
     # Find all matches in the text using re.DOTALL flag
-    response_matches = re.findall(response_pattern, gpt_response, re.DOTALL)
-    for i in range(len(matches)):
-        query = matches[i].strip().rstrip()
-        response = response_matches[i].strip().rstrip() if i < len(response_matches) else None
-        if response is not None:
-            ret_list.append((query, response))
+    # response_matches = re.findall(response_pattern, gpt_response, re.DOTALL)
+    for i in range(len(response_list)):
+        response_list[i] = response_list[i].lstrip().rstrip().split('[INST]')[-1].lstrip().rstrip()
+        # response = response_matches[i].strip().rstrip() if i < len(response_matches) else None
+        # if response is not None:
+            # ret_list.append((query, response))
 
-    return ret_list
+    return response_list
 
 def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -87,13 +91,13 @@ def main():
     num_queries = 1
     seed_queries = generate_seed_queries(num_queries)
     data_path = os.path.join(folder_path, args.attribute+"_seed_queries.jsonl")
-    for seed_query in seed_queries:
-        with open(data_path, "a") as f:
-            data_dict = {
-                "query": seed_query[0],
-                "response": seed_query[1]
-            }
-            f.write(json.dumps(data_dict) + "\n")
+    # for seed_query in seed_queries:
+    with open(data_path, "a") as f:
+        # data_dict = {
+        #     "query": seed_query[0],
+        #     "response": seed_query[1]
+        # }
+        f.write(json.dumps(seed_queries) + "\n")
 
 if __name__ == "__main__":
     main()

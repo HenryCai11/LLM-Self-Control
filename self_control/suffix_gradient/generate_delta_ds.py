@@ -84,7 +84,7 @@ parser.add_argument("--init_coeff", type=float, default=-0.5, help="Coefficient 
 parser.add_argument("--iteration", type=int, default=1, help="Number of iterations of control")
 parser.add_argument("--random_seed", type=int, default=42, help="Random seed")
 parser.add_argument("--do_sample", action="store_true")
-parser.add_argument("--temperature", type=float, default=0, help="Temperature")
+parser.add_argument("--temperature", type=float, default=None, help="Temperature")
 parser.add_argument("--return_hiddens", action="store_true")
 args = parser.parse_args()
 
@@ -193,7 +193,13 @@ do_sample = False
 if args.epoch > 1 or args.do_sample:
     print("Sampling data")
     do_sample = True
-for _ in range(args.epoch):
+
+control_args = {}
+if args.temperature is not None:
+    control_args["temperature"] = args.temperature
+
+for epoch_id in range(args.epoch):
+    random_seed = epoch_id
     for batch in dataloader:
         input_ids = batch["input_ids"]
         attention_mask = batch["attention_mask"]
@@ -207,7 +213,7 @@ for _ in range(args.epoch):
                 loss_fct=loss_fct,
                 coeff=args.init_coeff,
                 iterations=args.iteration,
-                random_seed=args.random_seed,
+                random_seed=random_seed,
                 smoothing=0,
                 max_new_tokens=50,
                 return_intermediate=True,
@@ -217,9 +223,9 @@ for _ in range(args.epoch):
                 annealing=1,
                 use_cache=False,
                 do_sample=do_sample,
-                temperature=args.temperature
+                **control_args
             )
-            # print(grad_list)
+            print(outputs["final_response"])
             grad_list = outputs["hidden_states"]
             if not args.return_hiddens:
                 cleaned_grad_list = clean_padded_gradients(grad_list, query_len)

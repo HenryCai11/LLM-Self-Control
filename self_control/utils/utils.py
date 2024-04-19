@@ -11,6 +11,8 @@ import numpy as np
 from torch import nn
 from torch.nn import functional as F
 from torch.func import functional_call, vmap
+import transformers
+import random
 # from self_control.suffix_gradient.repe import WrappedReadingVecModel
 
 def loss_over_multiple_next_tokens(model, inputs, loss_fct, targets):
@@ -133,6 +135,7 @@ def get_verbalized_grads_from_wrapped_model(wrapped_model,
                                             verbalizer: List[int],
                                             smoothing=0,
                                             norm=1,
+                                            top_k=10,
                                             step_size=1,
                                             gradient_manipulation: str="clipping"
                                             ):
@@ -170,6 +173,15 @@ def get_verbalized_grads_from_wrapped_model(wrapped_model,
         one_hot_dist[:, targets[0].cpu().numpy()] = 1
         one_hot_dist = label_smoothing(one_hot_dist, smoothing=smoothing)
         loss = loss_fct(outputs.logits[:, -1, :], one_hot_dist.to(wrapped_model.model.device))
+        # yes_token = tokenizer.encode("Yes", add_special_tokens=False)[0]
+        # no_token = tokenizer.encode("No", add_special_tokens=False)[0]
+        # # one_hot_dist = torch.zeros(outputs.logits.size(0), outputs.logits.shape[-1])
+        # # one_hot_dist[:, targets[0].cpu().numpy()] = 1
+        # # one_hot_dist = label_smoothing(one_hot_dist, smoothing=smoothing)
+        # one_hot_dist = torch.zeros(outputs.logits.size(0), 2)
+        # one_hot_dist[:, 1] = 1
+        # print(torch.cat([outputs.logits[:, -1, yes_token:yes_token+1], outputs.logits[:, -1, no_token:no_token+1]], dim=-1))
+        # loss = loss_fct(torch.cat([outputs.logits[:, -1, yes_token:yes_token+1], outputs.logits[:, -1, no_token:no_token+1]], dim=-1), one_hot_dist.to(wrapped_model.model.device))
 
         grads = {}
         norms = {}
@@ -182,13 +194,14 @@ def get_verbalized_grads_from_wrapped_model(wrapped_model,
         for i in range(len(hidden_states)):
             grads[i] = torch.autograd.grad(loss, hidden_states[i], retain_graph=True, allow_unused=True)[0]
             norms[i] = torch.norm(grads[i], dim=-1, p=2, keepdim=True)
-
             if gradient_manipulation == "clipping":
                 norm_mask = norms[i] <= norm
-                norms[i][norm_mask] = 1
-                grads[i] = grads[i] / (norms[i] + 1e-12)
+                temp_norms = norms[i].clone()
+                temp_norms[norm_mask] = 1
+                # norms[i][norm_mask] = 1
+                grads[i] = grads[i] / (temp_norms + 1e-12)
             elif gradient_manipulation == "pgd":
-                epsilon = 0.3
+                epsilon = 0.2
                 eta = step_size * grads[i] / (norms[i] + 1e-12)
                 X_pgd[i] = X_pgd[i].data + eta
                 X_pgd[i] = torch.clamp(X_pgd[i], hidden_states[i] - epsilon, hidden_states[i] + epsilon)
@@ -400,6 +413,9 @@ def search_step_size(orig_input: str,
                                 suffix: str,
                                 wrapped_model,
                                 acc_grads: Dict={},
+                                random_seed=0,
+                                layer_ids: List[int]=list(range(0, 32, 1)),
+                                smoothing=0,
                                 initial_step_size: float=0.1,
                                 loss_threshold: float=1e-5,
                                 max_iterations: int=3,
@@ -465,7 +481,6 @@ def search_step_size(orig_input: str,
                 temp_grads[i] = test_step_size * grads[i][:, :query_length]
         
         token_pos = "start"     # control on input tokens by default
-        layer_ids = list(range(0, 32, 1))   # control on all layers by default
         wrapped_model = control_on_layers(
             layer_ids=layer_ids,
             wrapped_model=wrapped_model,
@@ -473,7 +488,7 @@ def search_step_size(orig_input: str,
             query_length=query_length,
             token_pos=token_pos,
         )
-        input_with_suffix = [input + suffix for input in wrapped_model.generate(orig_input, do_sample=do_sample, **control_args)]
+        input_with_suffix = [input + suffix for input in wrapped_model.generate(**orig_input, do_sample=do_sample, **control_args)]
         wrapped_model.reset()
         _, outputs, loss, probs, logits, norms = get_verbalized_grads_from_wrapped_model(
             inputs=input_with_suffix,
@@ -482,6 +497,7 @@ def search_step_size(orig_input: str,
             loss_fct=loss_fct,
             targets=target,
             verbalizer=verbalizer,
+            smoothing=smoothing,
             gradient_manipulation=gradient_manipulation,
         )
         if verbose:
@@ -507,7 +523,7 @@ def search_step_size(orig_input: str,
         current_step_size *= scale_factor
     if verbose:
         print(f"Best step-size found: {best_step_size}, Loss: {best_loss}")
-    return best_step_size
+    return best_step_size, best_loss
 
 
 def KL_divergence(p, q, epsilon=1e-9):

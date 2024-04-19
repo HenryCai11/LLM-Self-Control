@@ -27,8 +27,8 @@ def get_args():
     parser.add_argument("--adapter_layers", type=int, default=30)
 
     # names
-    parser.add_argument("--training_set_name", type=str, default="happy_search_100_greedy", help="Name of the training dataset")
-    parser.add_argument("--eval_set_name", type=str, default="happy_search_10_eval_heldout", help="Name of the eval dataset")
+    parser.add_argument("--training_set_name", type=str, default="happy_search_100", help="Name of the training dataset")
+    parser.add_argument("--eval_set_name", type=str, default="happy_test", help="Name of the eval dataset")
     parser.add_argument("--attribute", type=str, default="happy", help="The attribute of the seed queries to generate")
     parser.add_argument("--run_name", type=str, default="gsm8k-1k", help="Name of a single run reported to wandb")
     parser.add_argument("--push_name", type=str, default="reasnoning", help="The name pushed to huggingface")

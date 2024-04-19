@@ -8,7 +8,7 @@ from torch.utils.data import Dataset
 import argparse
 from datasets import load_dataset
 from transformers import Trainer, TrainingArguments, AutoModelForCausalLM, AutoTokenizer
-from peft import AdaptionPromptConfig, LoraConfig, get_peft_model
+from peft import AdaptionPromptConfig, LoraConfig, get_peft_model, PrefixTuningConfig, TaskType, PromptTuningConfig, PromptTuningInit
 from transformers import BitsAndBytesConfig
 from typing import List, Dict
 from self_control.utils import vanilla_control, KL_divergence
@@ -33,6 +33,10 @@ import json
 from tqdm import tqdm
 from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
 
+import logging
+
+import torch.nn as nn
+
 os.environ["WANDB_PROJECT"] = "gradient-control"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -49,29 +53,6 @@ def main(cfg):
     args = cfg.training_args
     model_args = cfg.model
     attribute_args = cfg.attributes
-    config = AdaptionPromptConfig(
-        adapter_len=args.adapter_len,
-        adapter_layers=args.adapter_layers,
-        task_type="CAUSAL_LM",
-        target_modules="self_attn",
-    )
-    eval_log_strategy = args.get("eval_log_strategy", "epoch")
-    eval_log_steps = args.get("eval_log_step", None)
-    test_every_step = args.get("test_every_step", False)
-    target_lys = args.get("target_layers", 20)
-    do_eval = args.get("do_eval", True)
-    if not do_eval:
-        eval_log_strategy = 'no'
-    print(do_eval)
-    # config = LoraConfig(
-    #     r=16,
-    #     lora_alpha=16,
-    #     target_modules=["q_proj", "v_proj"],
-    #     lora_dropout=0.05,
-    #     bias="none",
-    #     # layers_to_transform=lora_layers_to_transform,
-    #     task_type="CAUSAL_LM",
-    # )
 
     print("Name of the adapter: ", attribute_args.push_name)
     model_name_or_path = model_args.model_name_or_path
@@ -80,6 +61,55 @@ def main(cfg):
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, padding_side="left")
     tokenizer.pad_token_id = 0 if tokenizer.pad_token_id is None else tokenizer.pad_token_id
     tokenizer.bos_token_id = 1
+
+    if args.peft_type == "llama-adapter":
+        config = AdaptionPromptConfig(
+            adapter_len=args.adapter_len,
+            adapter_layers=args.adapter_layers,
+            task_type="CAUSAL_LM",
+            target_modules="self_attn",
+        )
+    elif args.peft_type == "lora":
+        config = LoraConfig(
+            r=16,
+            lora_alpha=16,
+            target_modules=["q_proj", "v_proj"],
+            lora_dropout=0.05,
+            bias="none",
+            # layers_to_transform=lora_layers_to_transform,
+            task_type="CAUSAL_LM",
+        )
+        attribute_args.push_name += "-lora"
+        attribute_args.run_name += "-prompt"
+    elif args.peft_type == "prefix-tuning":
+        config = PrefixTuningConfig(task_type=TaskType.CAUSAL_LM, num_virtual_tokens=args.prefix_len)
+        attribute_args.push_name +="-prefix"
+        attribute_args.run_name += "-prefix"
+    elif args.peft_type == "prompt-tuning":
+        # prompt_len = len(tokenizer.encode("You are a sad assistant.", add_special_tokens=False))
+        # args.prompt_len = prompt_len
+        config = PromptTuningConfig(
+            task_type=TaskType.CAUSAL_LM,
+            # prompt_tuning_init=PromptTuningInit.RANDOM,
+            prompt_tuning_init=PromptTuningInit.TEXT,
+            num_virtual_tokens=args.prompt_len,
+            prompt_tuning_init_text="You are a <s> assistant.",
+            tokenizer_name_or_path=model_args.model_name_or_path,
+        )
+        attribute_args.push_name += "-prompt-system"
+        attribute_args.run_name += "-prompt-system"
+    else:
+        raise NotImplementedError(f"No peft module called {args.peft_type}")
+    print(config)
+    eval_log_strategy = args.get("eval_log_strategy", "epoch")
+    eval_log_steps = args.get("eval_log_step", None)
+    test_every_step = args.get("test_every_step", False)
+    target_lys = args.get("target_layers", 20)
+    do_eval = args.get("do_eval", True)
+    if not do_eval:
+        eval_log_strategy = 'no'
+    print(do_eval)
+
 
     model.enable_input_require_grads()
     model = get_peft_model(model, config)
@@ -120,10 +150,10 @@ def main(cfg):
         - tuple of torch.Tensor: Resized gradients accumulated in a tuple.
         """
         # Initialize a list to hold the tuples of tensors for each layer
-        tensors_of_layers = [list() for _ in range(len(batch[0].keys()))]
+        tensors_of_layers = [list() for _ in range(len(batch[0]))]
 
         for item in batch:
-            for i, (key, grad) in enumerate(item.items()):
+            for i, grad in enumerate(item):
                 # Remove the singleton dimension and permute to the desired shape
                 resized_grad = grad.squeeze(0)
                 # Accumulate the tensors for each layer in a tuple
@@ -157,13 +187,12 @@ def main(cfg):
         """
         Compute loss for 'quasi-meta-train'
         """
-        model.eval()
         # TODO: make sure this is correct
         grads = inputs.get("gradients") # size: (num_layers, bz, seq_len, hidden_dim)
         input_ids = inputs.get("input_ids")
         attention_mask = inputs.get("attention_mask")
+        input_str = inputs.get("input_strs")
 
-        model.train()
         # for now, lora_hidden == ori_hidden
         orig_outputs = model(
             input_ids=input_ids,
@@ -177,13 +206,18 @@ def main(cfg):
         target_hidden = torch.stack([grads[l].to(torch.bfloat16) for l in target_layers])
         orig_hidden = torch.stack([orig_hidden[l].to(torch.bfloat16) for l in target_layers])
 
-        loss = torch.norm(target_hidden - orig_hidden, p=2, dim=-1).nanmean() # shape: (bz, num_layers, seq_len)
-        # masked_norms = norms * attention_mask
-        # # Calculate the sum of the norms and the number of non-padded positions
-        # norm_sum = masked_norms.sum()
-        # num_non_padded = attention_mask.sum()
-        # # Compute the mean over non-padded positions
-        # loss = norm_sum / num_non_padded
+        # loss_fct = nn.L1Loss(reduction='mean')
+        # loss = loss_fct(target_hidden, orig_hidden)
+        norms = torch.norm(target_hidden - orig_hidden, p=2, dim=-1) # shape: (bz, num_layers, seq_len)
+        # logging.info(norms)
+        masked_norms = norms * attention_mask
+        # Calculate the sum of the norms and the number of non-padded positions
+        norm_sum = masked_norms.sum()
+        num_non_padded = attention_mask.sum()
+        # Compute the mean over non-padded positions
+        loss = norm_sum / num_non_padded
+        loss = loss / input_ids.size(0)
+        logging.info(f"{loss.item()}, bsz: {input_ids.size(0)} input: {input_str}")
 
         if args.add_kl and do_train:
             kl_loss = get_kl_divergence(model, tokenizer)
@@ -219,6 +253,14 @@ def main(cfg):
                 inputs["input_ids"] = inputs["input_ids"].to(self.model.device)
                 inputs["attention_mask"] = inputs["attention_mask"].to(self.model.device)
                 print(tokenizer.decode(self.model.generate(**inputs, do_sample=False, max_new_tokens=50)[0]))
+                # prompt = []
+                # with torch.no_grad():
+                #     embeddings = self.model.word_embeddings.weight
+                # tokens = self.model.prompt_encoder.default.embedding(self.model.prompt_tokens['default'].to(model.device))
+                # for i in range(args.prompt_len):
+                #     prompt.append(torch.nn.functional.cosine_similarity(tokens[i].cpu().detach(), embeddings.cpu(), dim=-1).squeeze().argmax())
+                # print(tokenizer.decode(prompt))
+                # logging.info(tokenizer.decode(prompt))
                 for batch in eval_dataloader:
                     loss += self.compute_loss(self.model, batch, do_train=False).detach().cpu()
                     num_batch += 1
@@ -279,10 +321,10 @@ def main(cfg):
         - max_length (int): The length to which the gradients should be padded.
 
         Returns:
-        - dict: A new dictionary with the padded gradients.
+        - Tensor: padded gradients.
         """
         padded_gradients = {}
-        for key, grad in gradients.items():
+        for key, grad in enumerate(gradients):
             pad_size = max_length - grad.size(1)
             if pad_size > 0:
                 pad_tensor = torch.zeros(grad.size(0), pad_size, *grad.size()[2:], dtype=grad.dtype, device=grad.device) # size: (bz, pad_size, hidden_dim)
@@ -290,7 +332,7 @@ def main(cfg):
             else:
                 padded_grad = grad
             padded_gradients[key] = padded_grad
-        return padded_gradients
+        return torch.stack([grad for grad in padded_gradients.values()])
 
     def pad_sequences_left(sequences, pad_value=0):
         """
@@ -317,10 +359,23 @@ def main(cfg):
         # Pad input_ids and attention_mask with left padding
         padded_input_ids = pad_sequences_left(input_ids_list, pad_value=0)  # Assuming 0 is the padding value for input_ids
         padded_attention_mask = pad_sequences_left(attention_mask_list, pad_value=0)  # Assuming 0 is the padding value for attention_mask
-        padded_grads_list = grads_list[0]
-        # print(padded_grads_list.shape)
+        if args.peft_type == "prompt-tuning":
+            grad_max_len = grads_list[0].size(2) + args.prompt_len
+        max_grad_length = max(
+            max(grad.size(1) for grad in grads)
+            for grads in grads_list
+        )
+        # print(grads_list[0][0][0])
+        padded_grads_list = [pad_gradients(grads, max_grad_length) for grads in grads_list]
+        padded_grads_list = resize_gradients(padded_grads_list)
+        # padded_grads_list = pad_gradients(grads_list[0], grad_max_len)
+        print(padded_grads_list.shape)
         # print(padded_grads_list[0][0])
-        assert padded_input_ids.size(1) == padded_grads_list.size(2)
+        # print(padded_grads_list)
+        if args.peft_type == "prompt-tuning":
+            assert padded_input_ids.size(1) + args.prompt_len == padded_grads_list.size(2)
+        else:
+            assert padded_input_ids.size(1) == padded_grads_list.size(2)
         # print(padded_input_ids)
         # print(padded_grads_list)
         return {
@@ -411,7 +466,7 @@ def main(cfg):
 
     happy_splits = {
         "train": TestDataset(happy_data[:100], tokenizer),
-        "eval": TestDataset(happy_data[100:120], tokenizer),
+        "eval": TestDataset(happy_data[100:], tokenizer),
         "test": TestDataset(happy_data[120:], tokenizer)
     }
 
@@ -424,6 +479,8 @@ def main(cfg):
     train_dataset = SuffixControlDataset(pickle_file=train_pickle_path, tokenizer=tokenizer, model=model)
     eval_dataset = SuffixControlDataset(pickle_file=eval_pickle_path, tokenizer=tokenizer, model=model)
 
+    attribute_args.push_name += str(args.lr)
+    attribute_args.run_name += str(args.lr)
     training_args = TrainingArguments(
         report_to="wandb",
         output_dir=args.output_dir,
@@ -432,6 +489,7 @@ def main(cfg):
         logging_steps=eval_log_steps,
         eval_steps=eval_log_steps,
         learning_rate=args.lr,
+        dataloader_drop_last=True,
         per_device_train_batch_size=args.batchsize,
         per_device_eval_batch_size=args.batchsize,
         # num_train_epochs=args.epoch,
@@ -478,12 +536,14 @@ def main(cfg):
         data_collator=collate_fn,
         optimizers=(optimizer, scheduler),
     )
-    trainer.evaluate()
-    trainer.train()
+    if args.mode == "train":
+        trainer.evaluate()
+        trainer.train()
     trainer.evaluate(final_test=True, target_dir=hydra_working_dir)
 
-    trainer.model.save_pretrained("../final_adapter")
-    trainer.model.push_to_hub(f"HenryCai1129/{attribute_args.push_name}")
+    if args.mode == "train":
+        trainer.model.save_pretrained("../final_adapter")
+        trainer.model.push_to_hub(f"HenryCai1129/{attribute_args.push_name}")
     torch.cuda.empty_cache()
     del model, trainer
     gc.collect()

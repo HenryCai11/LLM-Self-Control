@@ -1,11 +1,11 @@
 output_dir: "./new-results"
-mode: "train"
+mode: "test"
 batchsize: 48
 search: True
 add_kl: False
 schedule_type: "constant"
 warmup: 0.2
-lr: 3e-3
+lr: 9e-3
 max_steps: 100
 weight_decay: 0.02
 do_eval: True

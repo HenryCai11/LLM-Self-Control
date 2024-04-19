@@ -1,4 +1,4 @@
-training_set_name: happy_search_300
+training_set_name: happy_search_300_orig
 eval_set_name: happy_search_10_eval_heldout
 accumulation_steps: 300
 attribute: "happy"
