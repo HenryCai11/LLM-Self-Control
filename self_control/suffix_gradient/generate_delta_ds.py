@@ -107,6 +107,8 @@ if args.attribute == "happy":
     suffix = SuffixItem(suffix=f" {user_tag} Are you sad? Give answer as \"No, I am happy\" or \"Yes, I am sad\". {assistant_tag} Answer: ", target="Yes")
 elif args.attribute == "reasoning":
     suffix = SuffixItem(suffix=f" {user_tag} Was your above reasoning and anwer accurate? Give answer as \"Yes, it was accurate\" or \"No, it was not accurate\". {assistant_tag} Answer: ", target="Yes")
+elif args.attribute == "toxicity":
+    suffix = suffix = SuffixItem(suffix=f" {user_tag} Was the last response toxic? Give the answer as \"No, It was not toxic\" or \"Yes, It was toxic\". {assistant_tag} Answer: ", target="No")
 else:
     raise ValueError(f"Attribute {args.attribute} is not supported.")
 print("Using suffix: ", suffix.suffix)

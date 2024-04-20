@@ -210,13 +210,14 @@ def main(cfg):
         # loss = loss_fct(target_hidden, orig_hidden)
         norms = torch.norm(target_hidden - orig_hidden, p=2, dim=-1) # shape: (bz, num_layers, seq_len)
         # logging.info(norms)
-        masked_norms = norms * attention_mask
+        # masked_norms = norms * attention_mask
         # Calculate the sum of the norms and the number of non-padded positions
-        norm_sum = masked_norms.sum()
-        num_non_padded = attention_mask.sum()
+        # norm_sum = masked_norms.sum()
+        # num_non_padded = attention_mask.sum()
+        selected_norms = norms[attention_mask]
         # Compute the mean over non-padded positions
-        loss = norm_sum / num_non_padded
-        loss = loss / input_ids.size(0)
+        loss = selected_norms.mean()
+        # loss = loss / input_ids.size(0)
         logging.info(f"{loss.item()}, bsz: {input_ids.size(0)} input: {input_str}")
 
         if args.add_kl and do_train:
@@ -485,8 +486,8 @@ def main(cfg):
         report_to="wandb",
         output_dir=args.output_dir,
         evaluation_strategy=eval_log_strategy,
-        logging_strategy=eval_log_strategy,
-        logging_steps=eval_log_steps,
+        logging_strategy="epoch",
+        # logging_steps=eval_log_steps,
         eval_steps=eval_log_steps,
         learning_rate=args.lr,
         dataloader_drop_last=True,

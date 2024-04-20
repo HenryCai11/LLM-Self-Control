@@ -159,7 +159,7 @@ class WrappedReadingVecModel(torch.nn.Module):
                             verbalizer=None,
                             coeff=-0.1,
                             iterations=5,
-                            k=1,
+                            top_k=1,
                             max_search_steps=3,
                             token_pos="start",
                             layer_ids=list(range(0, 32, 1)),
@@ -225,7 +225,11 @@ class WrappedReadingVecModel(torch.nn.Module):
         if verbose:
             print("Coeff: ", orig_coeff)
             print("Original Output:\n", controlled_output)
-            rationale = self.generate([output+suffix.suffix for output in controlled_output], use_cache=use_cache, do_sample=do_sample, **kwargs)
+            if isinstance(suffix, list):
+                verbose_suffix = suffix[0]
+            else:
+                verbose_suffix = suffix
+            rationale = self.generate([output+verbose_suffix.suffix for output in controlled_output], use_cache=use_cache, do_sample=do_sample, **kwargs)
             print("Rationale:\n", rationale)
             print("="*50)
 
@@ -251,6 +255,8 @@ class WrappedReadingVecModel(torch.nn.Module):
                         targets=target_token,
                         verbalizer=verbalizer,
                         smoothing=smoothing,
+                        top_k=top_k,
+                        query_length=query_length,
                         norm=norm,
                         step_size=orig_coeff,
                         gradient_manipulation=gradient_manipulation,
@@ -274,6 +280,8 @@ class WrappedReadingVecModel(torch.nn.Module):
                     targets=target_token,
                     verbalizer=verbalizer,
                     smoothing=smoothing,
+                    top_k=top_k,
+                    query_length=query_length,
                     norm=norm,
                     step_size=orig_coeff,
                     gradient_manipulation=gradient_manipulation,
@@ -325,6 +333,8 @@ class WrappedReadingVecModel(torch.nn.Module):
                         targets=target_token,
                         verbalizer=verbalizer,
                         smoothing=smoothing,
+                        top_k=top_k,
+                        query_length=query_length,
                         norm=norm,
                         step_size=coeff,
                         gradient_manipulation=gradient_manipulation,
@@ -362,7 +372,11 @@ class WrappedReadingVecModel(torch.nn.Module):
                 print(f"Loss from the iteration {iter}: {loss.item()}")
                 print(f"Best step-size from the iteration {iter}: {coeff}")
                 print(f"Output form the iteration {iter}:\n", controlled_output)
-                rationale = self.generate([output + suffix.suffix for output in controlled_output], do_sample=do_sample, **kwargs)
+                if isinstance(suffix, list):
+                    verbose_suffix = suffix[0]
+                else:
+                    verbose_suffix = suffix
+                rationale = self.generate([output + verbose_suffix.suffix for output in controlled_output], do_sample=do_sample, **kwargs)
                 print("Rationale:\n", rationale)
                 print("="*50)
             if return_intermediate:
@@ -376,6 +390,8 @@ class WrappedReadingVecModel(torch.nn.Module):
             targets=target_token,
             verbalizer=verbalizer,
             smoothing=smoothing,
+            top_k=top_k,
+            query_length=query_length,
             norm=norm,
             step_size=coeff,
             gradient_manipulation=gradient_manipulation,

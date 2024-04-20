@@ -67,6 +67,8 @@ class SuffixControlDataset(Dataset):
                     break
         print("Length of data: ", len(data))
         return data
+    
+    # def _preprocess()
 
     def count_data_items(self):
         count = 0
@@ -173,13 +175,15 @@ def compute_loss(model, inputs, target_layers: List, alpha: float, return_output
     orig_hidden = torch.stack([orig_hidden[l].to(torch.bfloat16) for l in target_layers])
 
     norms = torch.norm(target_hidden - orig_hidden, p=2, dim=-1) # shape: (bz, num_layers, seq_len)
-    masked_norms = norms * attention_mask
-    # Calculate the sum of the norms and the number of non-padded positions
-    norm_sum = masked_norms.sum()
-    num_non_padded = attention_mask.sum()
-    # Compute the mean over non-padded positions
-    loss = norm_sum / num_non_padded
-    loss = loss / input_ids.size(1)
+    # masked_norms = norms * attention_mask
+    # # Calculate the sum of the norms and the number of non-padded positions
+    # norm_sum = masked_norms.sum()
+    # num_non_padded = attention_mask.sum()
+    # # Compute the mean over non-padded positions
+    # loss = norm_sum / num_non_padded
+    # loss = loss / input_ids.size(1)
+    selected_norms = norms[attention_mask]
+    loss = selected_norms.mean()
 
     # if args.add_kl and do_train:
     #     kl_loss = get_kl_divergence(model, tokenizer)
@@ -351,10 +355,10 @@ eval_dataset = SuffixControlDataset(pickle_file=eval_pickle_path, tokenizer=toke
 
 # Set up training parameters
 max_steps = 50
-warmup = 0.2
-batch_size = 32
-learning_rate = 3e-3
-accumulation_steps = 1
+warmup = 0.4
+batch_size = 16
+learning_rate = 3e-4
+accumulation_steps = 8
 wandb.init(project="gradient-control", name="Run-name", config={
     "learning_rate": learning_rate,
     "batch_size": batch_size,
@@ -364,6 +368,7 @@ wandb.init(project="gradient-control", name="Run-name", config={
 # Define a custom training function
 # def train(model, train_dataset, eval_dataset, tokenizer, epochs, batch_size, learning_rate):
 # Create data loaders
+
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=True, collate_fn=collate_fn)
 eval_loader = DataLoader(eval_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
 
@@ -386,12 +391,15 @@ for epoch in range(max_steps):
     train_loss = 0
     optimizer.zero_grad()
     for step, batch in enumerate(tqdm(train_loader, desc=f"Training Epoch {epoch + 1}")):
+        if step == 0:
+            print(batch.get("input_strs")[0])
         loss = compute_loss(model, batch, target_layers=list(range(0, 32, 1)), alpha=1, do_train=True)
         loss = loss / accumulation_steps  # Normalize the loss
         loss.backward()
         train_loss += loss.item() * accumulation_steps  # Undo the normalization for logging
 
         if (step + 1) % accumulation_steps == 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1)
             optimizer.step()
             optimizer.zero_grad()
 
@@ -408,7 +416,7 @@ for epoch in range(max_steps):
     eval_loss = evaluate(model, eval_loader, final_test=False)
     wandb.log({"train_loss": avg_train_loss, "eval_loss": eval_loss, "step": epoch})
     print(f"Average evaluation loss: {eval_loss}")
-
+eval_loss = evaluate(model, eval_loader, final_test=True)
 # Train the model
 # train(model, train_dataset, eval_dataset, tokenizer, epochs, batch_size, learning_rate)
 model.save_pretrained("./test")

@@ -134,6 +134,7 @@ def get_verbalized_grads_from_wrapped_model(wrapped_model,
                                             targets,
                                             verbalizer: List[int],
                                             smoothing=0,
+                                            query_length=None,
                                             norm=1,
                                             top_k=10,
                                             step_size=1,
@@ -195,11 +196,12 @@ def get_verbalized_grads_from_wrapped_model(wrapped_model,
             grads[i] = torch.autograd.grad(loss, hidden_states[i], retain_graph=True, allow_unused=True)[0]
             norms[i] = torch.norm(grads[i], dim=-1, p=2, keepdim=True)
             if gradient_manipulation == "clipping":
-                norm_mask = norms[i] <= norm
-                temp_norms = norms[i].clone()
-                temp_norms[norm_mask] = 1
+                pass
+                # norm_mask = norms[i] <= norm
+                # temp_norms = norms[i].clone()
+                # temp_norms[norm_mask] = 1
                 # norms[i][norm_mask] = 1
-                grads[i] = grads[i] / (temp_norms + 1e-12)
+                # grads[i] = grads[i] / (temp_norms + 1e-12)
             elif gradient_manipulation == "pgd":
                 epsilon = 0.2
                 eta = step_size * grads[i] / (norms[i] + 1e-12)
@@ -208,6 +210,21 @@ def get_verbalized_grads_from_wrapped_model(wrapped_model,
                 grads[i] = X_pgd[i] - hidden_states[i]
             elif gradient_manipulation == "autopgd":
                 pass
+        norm_tensor = torch.stack([norms[key] for key in norms], dim=0).squeeze(dim=-1)
+        save_shape = norm_tensor.shape
+        # print(save_shape)
+        norm_tensor[:, :, query_length:] = 0
+        values, indices = torch.topk(norm_tensor.view(-1), top_k, dim=-1)
+        flat_mask = torch.zeros_like(norm_tensor.view(-1))
+        flat_mask[indices] = 1
+        norm_mask = flat_mask.view(save_shape)
+        for i, norm_mask_layer in enumerate(norm_mask):
+            norm_mask_layer = norm_mask_layer.unsqueeze(dim=-1)
+            # print(grads[i].shape)
+            # print(norm_mask_layer.shape)
+            grads[i] = grads[i] * norm_mask_layer
+            grads[i] = grads[i] / (norms[i] + 1e-12)
+
         
         # print(grads)
         probs = softmax(outputs.logits[:, -1, verbalizer].detach().cpu().numpy()[0])
