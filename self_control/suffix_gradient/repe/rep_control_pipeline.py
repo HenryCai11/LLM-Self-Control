@@ -1,5 +1,5 @@
 from transformers.pipelines import TextGenerationPipeline
-from .rep_control_reading_vec import WrappedReadingVecModel
+from ..wrapped_model import WrappedReadingVecModel
 
 class RepControlPipeline(TextGenerationPipeline):
     def __init__(self, 
