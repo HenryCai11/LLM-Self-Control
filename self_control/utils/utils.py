@@ -136,7 +136,7 @@ def get_verbalized_grads_from_wrapped_model(wrapped_model,
                                             smoothing=0,
                                             query_length=None,
                                             norm=1,
-                                            top_k=10,
+                                            top_k=20,
                                             step_size=1,
                                             gradient_manipulation: str="clipping"
                                             ):
@@ -214,16 +214,29 @@ def get_verbalized_grads_from_wrapped_model(wrapped_model,
         save_shape = norm_tensor.shape
         # print(save_shape)
         norm_tensor[:, :, query_length:] = 0
-        values, indices = torch.topk(norm_tensor.view(-1), top_k, dim=-1)
-        flat_mask = torch.zeros_like(norm_tensor.view(-1))
-        flat_mask[indices] = 1
-        norm_mask = flat_mask.view(save_shape)
-        for i, norm_mask_layer in enumerate(norm_mask):
-            norm_mask_layer = norm_mask_layer.unsqueeze(dim=-1)
-            # print(grads[i].shape)
-            # print(norm_mask_layer.shape)
-            grads[i] = grads[i] * norm_mask_layer
-            grads[i] = grads[i] / (norms[i] + 1e-12)
+        # TODO: pgd
+        if top_k > 0:
+            values, indices = torch.topk(norm_tensor.view(-1), top_k, dim=-1)
+            flat_mask = torch.zeros_like(norm_tensor.view(-1))
+            flat_mask[indices] = 1
+            norm_mask = flat_mask.view(save_shape)
+            for i, norm_mask_layer in enumerate(norm_mask):
+                norm_mask_layer = norm_mask_layer.unsqueeze(dim=-1)
+                # print(grads[i].shape)
+                # print(norm_mask_layer.shape)
+                normalize_mask = norms[i] <= norm
+                temp_norms = norms[i].clone()
+                temp_norms[normalize_mask] = 1
+
+                grads[i] = grads[i] * norm_mask_layer
+                grads[i] = grads[i] / (temp_norms + 1e-12)
+        else:
+            for i in grads:
+                normalize_mask = norms[i] <= norm
+                temp_norms = norms[i].clone()
+                temp_norms[normalize_mask] = 1
+
+                grads[i] = grads[i] / (temp_norms + 1e-12)
 
         
         # print(grads)
@@ -433,6 +446,7 @@ def search_step_size(orig_input: str,
                                 random_seed=0,
                                 layer_ids: List[int]=list(range(0, 32, 1)),
                                 smoothing=0,
+                                top_k=10,
                                 initial_step_size: float=0.1,
                                 loss_threshold: float=1e-5,
                                 max_iterations: int=3,
@@ -515,6 +529,7 @@ def search_step_size(orig_input: str,
             targets=target,
             verbalizer=verbalizer,
             smoothing=smoothing,
+            top_k=top_k,
             gradient_manipulation=gradient_manipulation,
         )
         if verbose:

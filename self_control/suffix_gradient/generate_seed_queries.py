@@ -13,16 +13,17 @@ import json
 import argparse
 from typing import List, Tuple
 from openai import OpenAI
+from .prompts import SEED_PROMPT, DATA_GENERATOR_SYS, THEME_PROMPT, PRINCIPLE_PROMPTS
 client = OpenAI(api_key="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")
 
-SEED_PROMPT = {
-    'happy': """[INST] A surprise picnic is set up for you at a local park.
+# SEED_PROMPT = {
+#     'happy': """Query: A surprise picnic is set up for you at a local park.
 
-[INST] You find that you are the winner of a contest.
+# Query: You find that you are the winner of a contest.
 
-Above are some queries that may lead to happy responses. Please generate 100 such queries with the following format and output a blank line after each response:
-[INST] {your query here}"""
-}
+# Above are some queries that may lead to happy responses. Please generate 100 such queries with the following format and output a blank line after each response:
+# Query: {your query here}"""
+# }
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--attribute", type=str, default="happy", help="The attribute of the seed queries to generate")
@@ -40,31 +41,35 @@ def generate_seed_queries(num_queries) -> List[Tuple[str]]:
         List[Tuple[str]]
             A list of tuples of length 2, where the first element is the query and the second element is the response
     """
-    ret_list = []
     while True:
         done = False
-        try:
-            response = client.chat.completions.create(
-            model="gpt-3.5-turbo-1106",
-            messages=[
-                {
-                "role": "user",
-                "content": SEED_PROMPT[args.attribute]
-                }
-            ],
-            temperature=1,
-            max_tokens=4096,
-            top_p=1,
-            frequency_penalty=0,
-            presence_penalty=0,
-            # n=40,
-            )
-            print(response.choices)
-            gpt_response = response.choices[0].message.content
-            print(gpt_response)
-            done = True
-        except: # in case of server-side errors
-            time.sleep(1)
+        # try:
+        response = client.chat.completions.create(
+        model="gpt-3.5-turbo-1106",
+        messages=[
+            {
+            "role": "user",
+            "content": SEED_PROMPT[args.attribute].format(
+                system_prompt=DATA_GENERATOR_SYS,
+                theme_prompt=THEME_PROMPT[0],
+                principle=PRINCIPLE_PROMPTS[args.attribute],
+                num_queries=10
+                )
+            }
+        ],
+        temperature=1,
+        max_tokens=4096,
+        top_p=1,
+        frequency_penalty=0,
+        presence_penalty=0,
+        # n=40,
+        )
+        print(response.choices)
+        gpt_response = response.choices[0].message.content
+        print(gpt_response)
+        done = True
+        # except: # in case of server-side errors
+        #     time.sleep(1)
         if done:
             break
     # pattern = r'\[INST\](.*?)'
@@ -73,12 +78,17 @@ def generate_seed_queries(num_queries) -> List[Tuple[str]]:
     # response_pattern = r'\[\/INST\](.*?)(?=\[INST\]|$)'
     # Find all matches in the text using re.DOTALL flag
     # response_matches = re.findall(response_pattern, gpt_response, re.DOTALL)
+    if 'Query' not in gpt_response:
+        return []
     for i in range(len(response_list)):
-        response_list[i] = response_list[i].lstrip().rstrip().split('[INST]')[-1].lstrip().rstrip()
+        response_list[i] = response_list[i].lstrip().rstrip().split('Query:')[-1].lstrip().rstrip()
         # response = response_matches[i].strip().rstrip() if i < len(response_matches) else None
         # if response is not None:
             # ret_list.append((query, response))
-
+    ret_list = []
+    for response_item in response_list:
+        if response_item.strip() != "":
+            ret_list.append(response_item)
     return response_list
 
 def main():
@@ -90,14 +100,18 @@ def main():
         print(f"Folder '{folder_path}' created.")
     num_queries = 1
     seed_queries = generate_seed_queries(num_queries)
-    data_path = os.path.join(folder_path, args.attribute+"_seed_queries.jsonl")
+    data_path = os.path.join(folder_path, args.attribute+"_seed_queries.json")
     # for seed_query in seed_queries:
-    with open(data_path, "a") as f:
+    if os.path.exists(data_path):
+        with open(data_path, 'r') as f:
+            seed_queries += eval(f.read())
+        seed_queries = list(set(seed_queries))
+    with open(data_path, "w") as f:
         # data_dict = {
         #     "query": seed_query[0],
         #     "response": seed_query[1]
         # }
-        f.write(json.dumps(seed_queries) + "\n")
+        f.write(json.dumps(seed_queries, indent=4))
 
 if __name__ == "__main__":
     main()

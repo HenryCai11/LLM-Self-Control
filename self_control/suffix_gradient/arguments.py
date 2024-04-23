@@ -5,10 +5,12 @@ parser.add_argument("--model_name_or_path", type=str, default="meta-llama/Llama-
 parser.add_argument("--attribute", type=str, default="happy", help="The attribute of the seed queries to generate")
 parser.add_argument("--data_path", type=str, default=None, help="Path of a dataset")
 parser.add_argument("--output_name", type=str, default=None, help="Name of the output file")
+parser.add_argument("--resume_from", type=str, default=None, help="Resume from a previous data checkpoint")
 parser.add_argument("--max_num_data", type=int, default=300, help="Max number of data item")
 parser.add_argument("--start_from_idx", type=int, default=0, help="Start index of the data")
 parser.add_argument("--batchsize", type=int, default=3, help="Batch size")
 parser.add_argument("--epoch", type=int, default=1, help="Epoch of data generation, should be used with sampling")
+parser.add_argument("--max_norm", type=int, default=100, help="Filter gradients by their norms")
 
 # control_generate
 parser.add_argument("--search", action="store_true")

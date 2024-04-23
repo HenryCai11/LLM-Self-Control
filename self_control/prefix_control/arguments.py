@@ -21,6 +21,8 @@ def get_args():
     parser.add_argument("--eval_step", type=int, default=10)
     parser.add_argument("--epoch", type=int, default=5)
 
+    parser.add_argument("--do_test", action="store_true", help="If `do_train=False` then only do test")
+
     # adapter
     parser.add_argument("--peft_type", type=str, default="llama-adapter")
     parser.add_argument("--adapter_len", type=int, default=10, help="Length of adapter")

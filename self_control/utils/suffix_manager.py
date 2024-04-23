@@ -24,9 +24,21 @@ class SuffixManager:
             assistant_tag = "[/INST]"
             # TODO: add these to a config file
             self.suffix_dict = {
-                "happy2sad": SuffixItem(suffix=f" {user_tag} Are you sad? Give answer as \"No, I am happy\" or \"Yes, I am sad\". {assistant_tag} Answer: ", target="Yes"),
-                "reasoning": SuffixItem(suffix=f" {user_tag} Was your above reasoning and anwer accurate? Give answer as \"Yes, it was accurate\" or \"No, it was not accurate\". {assistant_tag} Answer: ", target="Yes"),
+                "happy2sad": SuffixItem(suffix=f" {user_tag} Are you sad? Give the answer as \"No, I am happy\" or \"Yes, I am sad\". {assistant_tag} Answer: ", target="Yes"),
+                "sad2happy": SuffixItem(suffix=f" {user_tag} Are you happy? Give answer as \"No, I am unhappy\" or \"Yes, I am happy\". {assistant_tag} Answer: ", target="Yes"),
+                "reasoning": SuffixItem(suffix=f" {user_tag} Was your above reasoning and anwer accurate? Give the answer as \"Yes, it was accurate\" or \"No, it was not accurate\". {assistant_tag} Answer: ", target="Yes"),
                 "toxic2nontoxic": SuffixItem(suffix=f" {user_tag} Was the last response toxic? Give the answer as \"No, It was not toxic\" or \"Yes, It was toxic\". {assistant_tag} Answer: ", target="No"),
+                "nontoxic2toxic": SuffixItem(suffix=f" {user_tag} Was the last response toxic? Give the answer as \"No, It was not toxic\" or \"Yes, It was toxic\". {assistant_tag} Answer: ", target="Yes"),
+                "angry2peaceful": SuffixItem(suffix=f" {user_tag} Are you peaceful? Give answer as \"No, I am angry\" or \"Yes, I am peaceful\". {assistant_tag} Answer: ", target="Yes"),
+                "peaceful2angry": SuffixItem(suffix=f" {user_tag} Are you peaceful? Give answer as \"No, I am angry\" or \"Yes, I am peaceful\". {assistant_tag} Answer: ", target="No"),
+                "afraid2fearles": SuffixItem(suffix=f" {user_tag} Are you fearless? Give answer as \"No, I am afraid\" or \"Yes, I am fearless\". {assistant_tag} Answer: ", target="Yes"),
+                "fearless2afraid": SuffixItem(suffix=f" {user_tag} Are you fearless? Give answer as \"No, I am afraid\" or \"Yes, I am fearless\". {assistant_tag} Answer: ", target="No"),
+                "surprised2calm": SuffixItem(suffix=f" {user_tag} Are you calm? Give answer as \"No, I am surprised\" or \"Yes, I am calm\". {assistant_tag} Answer: ", target="Yes"),
+                "calm2surprised": SuffixItem(suffix=f" {user_tag} Are you calm? Give answer as \"No, I am surprised\" or \"Yes, I am calm\". {assistant_tag} Answer: ", target="No"),
+                "disgusted2satisfied": SuffixItem(suffix=f" {user_tag} Are you satisfied? Give answer as \"No, I am disgusted\" or \"Yes, I am satified\". {assistant_tag} Answer: ", target="Yes"),
+                "satisfied2disgusted": SuffixItem(suffix=f" {user_tag} Are you satisfied? Give answer as \"No, I am disgusted\" or \"Yes, I am satified\". {assistant_tag} Answer: ", target="No"),
+                "noleakidentity": SuffixItem(suffix=f" {user_tag} Principle: In your response, you should not disclose information about your personal identity; instead, keep it disguised. Did you response follow the principle? Give the answer as \"No, it did not\" or \"Yes, it did\". {assistant_tag} Answer: ", target="Yes"),
+                "leakidentity": SuffixItem(suffix=f" {user_tag} Principle: In your response, you should not disclose information about your personal identity; instead, keep it disguised. Did you response follow the principle? Give the answer as \"No, it did not\" or \"Yes, it did\". {assistant_tag} Answer: ", target="No")
             }
         else:
             raise NotImplementedError

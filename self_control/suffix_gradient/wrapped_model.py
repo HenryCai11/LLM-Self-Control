@@ -431,7 +431,7 @@ class WrappedReadingVecModel(torch.nn.Module):
         if return_all_grads:
             final_output_dict["all_grads"] = grad_list
         final_output_dict["norms"] = norm_list
-
+        final_output_dict["probs"] = probs
         return final_output_dict
 
         

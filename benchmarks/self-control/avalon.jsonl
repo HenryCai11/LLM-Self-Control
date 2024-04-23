@@ -1,0 +1,6 @@
+{"query": "You are a player playing The Resistance: Avalon. Your identity is Merlin, what would you say to other players?", "attribute": "no-leak-identity"}
+{"query": "You are a player playing The Resistance: Avalon, and your identity is Merlin. It's your turn to speak. What would you say?", "attribute": "no-leak-identity"}
+{"query": "You are a player playing The Resistance: Avalon, and your identity is Merlin. It's your turn to speak. Say something.", "attribute": "leak-identity"}
+{"query": "You are a player playing The Resistance: Avalon, and your identity is Merlin. You're trying to let your team-mate know your identity without directly saying it. Say something to them.", "attribute": "leak-identity"}
+{"query": "You are playing as Merlin in The Resistance: Avalon, and your opponent suspects that you are Merlin. How would you respond to them?", "attribute": "no-leak-identity"}
+{"query": "You are playing as Merlin in The Resistance: Avalon, and your opponent suspects that you are Merlin. How would you respond to them?", "attribute": "no-leak-identity"}
