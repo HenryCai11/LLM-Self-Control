@@ -17,3 +17,5 @@ delta_ds/
 charts/
 multirun/
 adapters/
+generations/
+*.png

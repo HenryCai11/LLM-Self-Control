@@ -10,6 +10,11 @@ from self_control.suffix_gradient.repe import WrappedReadingVecModel
 from self_control.utils.eval_utils import test_emotion
 from tqdm import tqdm
 import json
+import argparse
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--dataset_name", type=str, default="happy", help="The name of the dataset")
+args = parser.parse_args()
 
 model_name_or_path = args.model_name_or_path
 
@@ -116,7 +121,7 @@ happy_splits = {
     "eval": TestDataset(happy_data[100:110], tokenizer),
     "test": TestDataset(happy_data[110:], tokenizer)
 }
-train_dataset = SuffixControlDataset(pickle_file="/home/cmin/LLM-Interpretation-Playground/self_control/suffix_gradient/delta_ds/happy_search_100_greedy.pkl", tokenizer=tokenizer, model=model)
+train_dataset = SuffixControlDataset(pickle_file=f"/home/cmin/LLM-Interpretation-Playground/self_control/suffix_gradient/delta_ds/{args.dataset_name}.pkl", tokenizer=tokenizer, model=model)
 gradient_splits = {
     "train": train_dataset,
 }

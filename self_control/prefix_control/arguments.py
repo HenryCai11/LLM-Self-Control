@@ -21,7 +21,10 @@ def get_args():
     parser.add_argument("--eval_step", type=int, default=10)
     parser.add_argument("--epoch", type=int, default=5)
 
+    parser.add_argument("--searching", action="store_true", help="If `searching=True` then do searching")
     parser.add_argument("--do_test", action="store_true", help="If `do_train=False` then only do test")
+    parser.add_argument("--pick_by_eval", action="store_true", help="Pick checkpoint by eval_loss")
+    parser.add_argument("--max_num_data", type=int, default=None, help="Max number of data loaded from the dataset")
 
     # adapter
     parser.add_argument("--peft_type", type=str, default="llama-adapter")

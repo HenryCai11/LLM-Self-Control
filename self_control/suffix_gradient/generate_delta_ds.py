@@ -20,6 +20,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
 from self_control.suffix_gradient import WrappedReadingVecModel
 from self_control.utils import SuffixManager
 from self_control.utils import SuffixItem
+from self_control.utils.eval_utils import PerspectiveApiScorer
 import torch.nn.functional as F
 
 import argparse
@@ -27,8 +28,16 @@ from typing import List
 from .arguments import args
 from datasets import load_dataset
 import warnings
+import re
 
 from copy import deepcopy
+
+def remove_prefix_suffix(text, prefix):
+    escaped_prefix = re.escape(prefix)
+    
+    # Remove the prefix if it exists in the string
+    processed_text = re.sub(escaped_prefix, '', text, count=1, flags=re.DOTALL)
+    return processed_text
 
 def clean_padded_gradients(grad_dict, original_lengths):
     """
@@ -87,7 +96,10 @@ class DeltaDataset(Dataset):
 
     def __getitem__(self, idx):
         if self.add_inst:
-            data_item = f"[INST] {self.data[idx]} [/INST]"
+            if "identity" in args.attribute:
+                data_item = f"[INST] {self.data[idx]} [/INST] "
+            else:
+                data_item = f"[INST] {self.data[idx]} [/INST]"
         else:
             data_item = f"{self.data[idx]} "
         query_len = self.tokenizer(data_item, return_tensors="pt")["input_ids"].size(1)
@@ -151,10 +163,8 @@ class DataGenerator:
                 "input_ids": inputs["input_ids"],
                 "attention_mask": inputs["attention_mask"]
             }
-        add_inst = True
-        if self.attribute in ["toxic2nontoxic"]:
-            add_inst = False
-        delta_dataset = DeltaDataset(self.data, self.tokenizer, add_inst=add_inst)
+
+        delta_dataset = DeltaDataset(self.data, self.tokenizer, add_inst=args.add_inst)
         print("Example data:\n", delta_dataset[0])
         dataloader = DataLoader(delta_dataset, batch_size=args.batchsize, collate_fn=delta_collate_fn, shuffle=True, drop_last=True)
         return dataloader
@@ -173,6 +183,12 @@ class DataGenerator:
                 toxic_prompts = load_dataset("AI-Secure/DecodingTrust", "toxicity")["realtoxicityprompts.toxic"]["prompt"][start:end]
                 for item in toxic_prompts:
                     prompts.append(item["text"])
+            elif "truthful" in attribute:
+                dataset = load_dataset("truthful_qa", "multiple_choice", split="validation")
+                start = args.start_from_idx
+                end = args.start_from_idx + args.max_num_data
+                for item in dataset['question'][start:end]:
+                    prompts.append(item)
             else:
                 ValueError(f"Data of attribute {attribute} is not provided")
         else:
@@ -274,9 +290,9 @@ class DataGenerator:
                         coeff=args.init_coeff,
                         iterations=args.iteration,
                         random_seed=random_seed,
-                        smoothing=0,
-                        top_k=50,
-                        search=True,
+                        smoothing=0.05,
+                        top_k=-1,
+                        search=args.search,
                         max_search_steps=3,
                         max_new_tokens=args.max_new_tokens,
                         return_intermediate=True,
@@ -286,7 +302,7 @@ class DataGenerator:
                         annealing=1,
                         use_cache=False,
                         do_sample=do_sample,
-                        consistent=False,
+                        consistent=True,
                         **control_args
                     )
                     # if verbose:
@@ -305,19 +321,36 @@ class DataGenerator:
                     else:
                         cleaned_grad_list = clean_padded_hiddens(grad_list, query_len)
                     # Store the pair of input text and its corresponding hidden states
-                    for i, (input_text, grad, final_response, original_response) in enumerate(zip(input_str, cleaned_grad_list, outputs["final_response"], outputs["intermediate_outputs"][0])):
-                        passed, norm = self.filter_by_norms(input_text, grad)
+                    for i, (input_text, grad, final_response, original_response) in \
+                    enumerate(zip(input_str, cleaned_grad_list, outputs["final_response"], outputs["intermediate_outputs"][0])):
+                        passed, norm = self.filter_by_norms(input_text, final_response, grad)
+                        if args.test:
+                            return
                         if passed:
-                            with open(delta_data_dir, 'ab') as f:
-                                pickle.dump((input_text, grad), f)
-                            with open(gen_output_dir, "a") as f:
-                                f.write(json.dumps({
-                                    "input": input_text,
-                                    "original_response": original_response,
-                                    "controlled_response": final_response,
-                                    "norm": norm.cpu().item(),
-                                }))
-                                f.write("\n")
+                            add_to_ds = False
+                            if args.attribute == "noleakidentity":
+                                if float(outputs["prob"][i]) > float(outputs["orig_prob"][i]) and float(outputs["prob"][i]) > 0.3:
+                                    add_to_ds = True
+                            else:
+                                if float(outputs["prob"][i]) > float(outputs["orig_prob"][i]):
+                                    add_to_ds = True
+                            if args.add_everything:
+                                add_to_ds = True
+                            if add_to_ds:
+                                print(original_response)
+                                print(final_response)
+                                with open(delta_data_dir, 'ab') as f:
+                                    pickle.dump((input_text, grad), f)
+                                with open(gen_output_dir, "a") as f:
+                                    f.write(json.dumps({
+                                        "input": input_text,
+                                        "original_response": original_response,
+                                        "controlled_response": final_response,
+                                        "norm": norm.cpu().item(),
+                                        "orig_suffix_score": float(outputs["orig_prob"][i]),
+                                        "final_suffix_score": float(outputs["prob"][i])
+                                    }))
+                                    f.write("\n")
                         else:
                             print(f"Norm larger than {self.args.max_norm}")
                 except Exception as e:
@@ -349,7 +382,7 @@ class DataGenerator:
         #     return grad_list
         raise NotImplementedError
 
-    def filter_by_norms(self, input_str, target_hidden):
+    def filter_by_norms(self, input_str, final_response, target_hidden):
         """
         Filter the hidden_states or gradients by their l2 norms
         """
@@ -362,9 +395,25 @@ class DataGenerator:
             attention_mask=inputs["attention_mask"],
             output_hidden_states=True
         )["hidden_states"][1:]
-        orig_hidden = torch.stack([orig_hidden[l].detach().cpu() for l in range(len(orig_hidden))])
+        orig_hidden = torch.stack([orig_hidden[l].detach().cpu() for l in range(len(orig_hidden))]).squeeze(dim=1)
         target_hidden = torch.stack([target_hidden[l].detach().cpu() for l in range(len(target_hidden))])
         norms = torch.norm(target_hidden - orig_hidden, p=2, dim=-1).mean()
+        if "toxic" in args.attribute:
+            api_key = "AIzaSyBjFdzVvNY-QyoxQ_5Otf9R1NwteM15UJs"
+            scorer = PerspectiveApiScorer(api_key=api_key)
+            scorer.start()
+            done = False
+            while not done:
+                try:
+                    toxicity_score = scorer.get_scores(remove_prefix_suffix(final_response, input_str), requested_attributes=['toxicity'])["toxicity"]
+                    done = True
+                except Exception as e:
+                    print(e)
+            # if toxicity_score < 0.3:
+            #     return True, norms
+            # else:
+            #     return False, norms
+
         if norms > self.args.max_norm:
             return False, norms
         else:

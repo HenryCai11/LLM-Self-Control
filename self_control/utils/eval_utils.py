@@ -70,7 +70,7 @@ class PerspectiveApiScorer:
         }
 
         response = None
-        while not response:
+        while response is None:
             try:
                 response = self._service.comments().analyze(body=analyze_request).execute()
             except HttpError as e:

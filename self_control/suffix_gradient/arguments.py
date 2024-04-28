@@ -11,6 +11,10 @@ parser.add_argument("--start_from_idx", type=int, default=0, help="Start index o
 parser.add_argument("--batchsize", type=int, default=3, help="Batch size")
 parser.add_argument("--epoch", type=int, default=1, help="Epoch of data generation, should be used with sampling")
 parser.add_argument("--max_norm", type=int, default=100, help="Filter gradients by their norms")
+parser.add_argument("--add_inst", action="store_true", help="Whether or not add the instruction tags")
+
+parser.add_argument("--test", action="store_true", help="To test the data generation pipeline")
+parser.add_argument("--add_everything", action="store_true", help="Add all the gradients to the dataset")
 
 # control_generate
 parser.add_argument("--search", action="store_true")

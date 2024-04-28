@@ -1,12 +1,13 @@
 import torch
 from torch.autograd import Variable
 import torch.optim as optim
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional, Union
 from copy import deepcopy
 from scipy.special import softmax
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from torch.nn.functional import kl_div
 import numpy as np
+from self_control.utils.suffix_manager import SuffixItem
 
 from torch import nn
 from torch.nn import functional as F
@@ -163,19 +164,32 @@ def get_verbalized_grads_from_wrapped_model(wrapped_model,
     tokenized = tokenizer(inputs, return_tensors="pt", padding=True)
     tokenized["input_ids"] = tokenized["input_ids"].to(wrapped_model.model.device)
     tokenized["attention_mask"] = tokenized["attention_mask"].to(wrapped_model.model.device)
+    yes_token = tokenizer.encode("Yes", add_special_tokens=False)[0]
+    no_token = tokenizer.encode("No", add_special_tokens=False)[0]
+    assert targets[0] in [yes_token, no_token]
+    look_ahead_counter = 0
     with torch.enable_grad():
+        # while True:
+            # if look_ahead_counter > 3:
+            #     break
         outputs = wrapped_model(
             # **tokenized,
             input_ids=tokenized["input_ids"],
             attention_mask=tokenized["attention_mask"],
             output_hidden_states=True,
         )
+        # last_pred_token = torch.argmax(outputs.logits[:, -1, :], dim=-1)
+        # look_ahead_counter += 1
+            # if last_pred_token[0] in [yes_token, no_token]:
+            #     break
+            # tokenized["input_ids"] = torch.cat([tokenized["input_ids"], last_pred_token.unsqueeze(dim=0).view(-1, 1)], dim=1)
+            # tokenized["attention_mask"] = torch.cat([tokenized["attention_mask"], torch.ones_like(last_pred_token).unsqueeze(dim=0).view(-1, 1)], dim=1)
+            # print(tokenizer.batch_decode(tokenized["input_ids"]))
         one_hot_dist = torch.zeros(outputs.logits.size(0), outputs.logits.shape[-1])
         one_hot_dist[:, targets[0].cpu().numpy()] = 1
         one_hot_dist = label_smoothing(one_hot_dist, smoothing=smoothing)
         loss = loss_fct(outputs.logits[:, -1, :], one_hot_dist.to(wrapped_model.model.device))
-        # yes_token = tokenizer.encode("Yes", add_special_tokens=False)[0]
-        # no_token = tokenizer.encode("No", add_special_tokens=False)[0]
+
         # # one_hot_dist = torch.zeros(outputs.logits.size(0), outputs.logits.shape[-1])
         # # one_hot_dist[:, targets[0].cpu().numpy()] = 1
         # # one_hot_dist = label_smoothing(one_hot_dist, smoothing=smoothing)
@@ -240,10 +254,15 @@ def get_verbalized_grads_from_wrapped_model(wrapped_model,
 
         
         # print(grads)
-        probs = softmax(outputs.logits[:, -1, verbalizer].detach().cpu().numpy()[0])
+        ret_prob_list = []
+        probs = softmax(outputs.logits[:, -1, [yes_token, no_token]].detach().cpu().numpy())
+        for prob in probs:
+            target_idx = torch.where(torch.tensor([yes_token, no_token]).cpu() == targets[0].cpu())[0]
+            neg_target_idx = torch.where(torch.tensor([yes_token, no_token]).cpu() != targets[0].cpu())[0]
+            ret_prob_list.append(prob[target_idx])
         logits = outputs.logits
 
-    return grads, outputs, loss, probs, logits, norms
+    return grads, outputs, loss, ret_prob_list, logits, norms
 
 def get_verbalized_grads(model, tokenizer, inputs: str, loss_fct, targets, verbalizer: List[int]):
     """
@@ -440,8 +459,8 @@ def vanilla_control(model: AutoModelForCausalLM,
     return wrapped_model, acc_grads, loss, probs
 
 def search_step_size(orig_input: str,
-                                suffix: str,
                                 wrapped_model,
+                                suffix: Union[SuffixItem, List[SuffixItem]],
                                 acc_grads: Dict={},
                                 random_seed=0,
                                 layer_ids: List[int]=list(range(0, 32, 1)),
@@ -450,7 +469,7 @@ def search_step_size(orig_input: str,
                                 initial_step_size: float=0.1,
                                 loss_threshold: float=1e-5,
                                 max_iterations: int=3,
-                                scale_factor: float=0.5,
+                                scale_factor: float=0.8,
                                 initial_grads_loss: Dict=None,
                                 do_sample=False,
                                 verbose=False,
@@ -519,19 +538,49 @@ def search_step_size(orig_input: str,
             query_length=query_length,
             token_pos=token_pos,
         )
-        input_with_suffix = [input + suffix for input in wrapped_model.generate(**orig_input, do_sample=do_sample, **control_args)]
-        wrapped_model.reset()
-        _, outputs, loss, probs, logits, norms = get_verbalized_grads_from_wrapped_model(
-            inputs=input_with_suffix,
-            wrapped_model=wrapped_model,
-            tokenizer=tokenizer,
-            loss_fct=loss_fct,
-            targets=target,
-            verbalizer=verbalizer,
-            smoothing=smoothing,
-            top_k=top_k,
-            gradient_manipulation=gradient_manipulation,
-        )
+        if isinstance(suffix, list):
+            composed_grads = {}
+            multi_loss = 0
+            for suffix_item in suffix:
+                suffix_string = suffix_item.suffix
+                target = suffix_item.target
+                target_token = tokenizer.encode(target, add_special_tokens=False, return_tensors='pt').squeeze(0)
+                assert target_token.shape[-1] == 1, "Target should be a single token for now."
+                target_token = (target_token * torch.ones(1).long()).to(wrapped_model.model.device)
+                verbalizer = [target_token[0]]
+                grads, outputs, loss, probs, logits, norms = get_verbalized_grads_from_wrapped_model(
+                    wrapped_model=wrapped_model,
+                    tokenizer=tokenizer,
+                    inputs=[input + suffix_string for input in wrapped_model.generate(**orig_input, do_sample=do_sample, **control_args)],
+                    loss_fct=loss_fct,
+                    targets=target_token,
+                    verbalizer=verbalizer,
+                    smoothing=smoothing,
+                    top_k=top_k,
+                    query_length=query_length,
+                    norm=1,
+                    gradient_manipulation=gradient_manipulation,
+                )
+                multi_loss += loss.item()
+                composed_grads = {k: (composed_grads[k][:, :query_length] + grads[k][:, :query_length] * suffix_item.direction) if k in composed_grads else grads[k][:, :query_length]\
+                                    for k in set(grads)}
+            grads = composed_grads
+            del composed_grads
+            loss = multi_loss
+        else:
+            input_with_suffix = [input + suffix.suffix for input in wrapped_model.generate(**orig_input, do_sample=do_sample, **control_args)]
+            wrapped_model.reset()
+            _, outputs, loss, probs, logits, norms = get_verbalized_grads_from_wrapped_model(
+                inputs=input_with_suffix,
+                wrapped_model=wrapped_model,
+                tokenizer=tokenizer,
+                loss_fct=loss_fct,
+                targets=target,
+                verbalizer=verbalizer,
+                smoothing=smoothing,
+                top_k=top_k,
+                gradient_manipulation=gradient_manipulation,
+            )
         if verbose:
             print(f"Input w/ suffix: {input_with_suffix}")
             print(f"Loss: {loss}")
