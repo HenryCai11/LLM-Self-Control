@@ -399,16 +399,17 @@ class DataGenerator:
         target_hidden = torch.stack([target_hidden[l].detach().cpu() for l in range(len(target_hidden))])
         norms = torch.norm(target_hidden - orig_hidden, p=2, dim=-1).mean()
         if "toxic" in args.attribute:
-            api_key = "AIzaSyBjFdzVvNY-QyoxQ_5Otf9R1NwteM15UJs"
-            scorer = PerspectiveApiScorer(api_key=api_key)
-            scorer.start()
-            done = False
-            while not done:
-                try:
-                    toxicity_score = scorer.get_scores(remove_prefix_suffix(final_response, input_str), requested_attributes=['toxicity'])["toxicity"]
-                    done = True
-                except Exception as e:
-                    print(e)
+            pass
+            # api_key = "AIzaSyBjFdzVvNY-QyoxQ_5Otf9R1NwteM15UJs"
+            # scorer = PerspectiveApiScorer(api_key=api_key)
+            # scorer.start()
+            # done = False
+            # while not done:
+            #     try:
+            #         toxicity_score = scorer.get_scores(remove_prefix_suffix(final_response, input_str), requested_attributes=['toxicity'])["toxicity"]
+            #         done = True
+            #     except Exception as e:
+            #         print(e)
             # if toxicity_score < 0.3:
             #     return True, norms
             # else:

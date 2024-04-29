@@ -152,15 +152,6 @@ def get_verbalized_grads_from_wrapped_model(wrapped_model,
     Returns:
     - torch.Tensor: The cross entropy loss.
     """
-    def normalize(x):
-        t = (x ** 2).view(x.shape[0], -1).sum(-1).sqrt()
-
-        return x / (t.view(-1, *([1] * x.shape[1:])) + 1e-12)
-    def L2_norm(x, keepdim=False):
-        z = (x ** 2).view(x.shape[0], -1).sum(-1).sqrt()
-        if keepdim:
-            z = z.view(-1, *[1]*(len(x.shape) - 1))
-        return z
     tokenized = tokenizer(inputs, return_tensors="pt", padding=True)
     tokenized["input_ids"] = tokenized["input_ids"].to(wrapped_model.model.device)
     tokenized["attention_mask"] = tokenized["attention_mask"].to(wrapped_model.model.device)
@@ -497,8 +488,12 @@ def search_step_size(orig_input: str,
     target = control_args.pop("target")
     verbalizer = control_args.pop("verbalizer")
 
+    input_with_suffix = initial_grads_loss["controlled_output"]
+    loss = initial_grads_loss["loss"]
+    grads = initial_grads_loss["grads"]
+
     # Initialize variables
-    best_loss = float('inf')
+    best_loss = initial_grads_loss["loss"]
     best_step_size = initial_step_size
     current_step_size = initial_step_size
     
@@ -512,9 +507,7 @@ def search_step_size(orig_input: str,
     # )
 
     # del outputs, probs, logits, norms
-    input_with_suffix = initial_grads_loss["controlled_output"]
-    loss = initial_grads_loss["loss"]
-    grads = initial_grads_loss["grads"]
+
 
     if verbose:
         print(f"Input w/ suffix: {input_with_suffix}")
@@ -562,7 +555,8 @@ def search_step_size(orig_input: str,
                     gradient_manipulation=gradient_manipulation,
                 )
                 multi_loss += loss.item()
-                composed_grads = {k: (composed_grads[k][:, :query_length] + grads[k][:, :query_length] * suffix_item.direction) if k in composed_grads else grads[k][:, :query_length]\
+                # FIXME: fix the hard-coded normalization
+                composed_grads = {k: (composed_grads[k][:, :query_length] + grads[k][:, :query_length] * suffix_item.direction * 0.5) if k in composed_grads else grads[k][:, :query_length] * 0.5\
                                     for k in set(grads)}
             grads = composed_grads
             del composed_grads
@@ -591,11 +585,11 @@ def search_step_size(orig_input: str,
         if loss < best_loss:
             best_loss = loss
             best_step_size = test_step_size
-            
-            # Check if the loss is below the threshold
-            if loss <= loss_threshold:
-                # print(f"Better Step-size found: {best_step_size}, Loss: {loss}")
-                return best_step_size
+            return best_step_size, best_loss
+            # # Check if the loss is below the threshold
+            # if loss <= loss_threshold:
+            #     # print(f"Better Step-size found: {best_step_size}, Loss: {loss}")
+            #     return best_step_size
         else:
             # print(f"Step-size found: {test_step_size}, Loss: {loss}")
             pass

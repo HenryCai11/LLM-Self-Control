@@ -13,7 +13,7 @@ do
         --accumulation_steps 16 \
         --peft_type "llama-adapter" \
         --searching \
-        --max_num_data 500\
+        --max_num_data 1500 \
         --pick_by_eval 
 
     CUDA_VISIBLE_DEVICES=1 python -m self_control.prefix_control.adapter_no_trainer \

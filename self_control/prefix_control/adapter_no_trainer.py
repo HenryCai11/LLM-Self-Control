@@ -30,6 +30,7 @@ import wandb
 import json
 from self_control.utils.eval_utils import test_emotion, PerspectiveApiScorer
 from self_control.suffix_gradient.scorer import GPTScorer
+import torch.nn as nn
 
 os.environ["WANDB_PROJECT"] = "gradient-control"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -52,6 +53,13 @@ elif args.peft_type == "lora":
         # layers_to_transform=lora_layers_to_transform,
         task_type="CAUSAL_LM",
     )
+elif args.peft_type == "prefix+adapter":
+    config = PeftConfig(
+        adapter_len=128,
+        adapter_layers=32,
+        task_type="CAUSAL_LM",
+        target_modules="self_attn",
+    )
 elif args.peft_type == "full":
     bnb_config = BitsAndBytesConfig(
         load_in_8bit=True,
@@ -59,7 +67,6 @@ elif args.peft_type == "full":
         bnb_4bit_use_double_quant=True,
         bnb_4bit_compute_dtype=torch.float16,
     )
-    prepare_model_for_kbit_training
 
 random_seed = 42
 transformers.set_seed(random_seed)
@@ -158,6 +165,8 @@ if args.do_test:
 elif args.peft_type != "full":
     model.enable_input_require_grads()
     model = get_peft_model(model, config)
+    if args.peft_type == "prefix+adapter":
+        model.prefix_embedder = nn.Embedding(10, model.config.hidden_size)
 
 model.print_trainable_parameters()
 
