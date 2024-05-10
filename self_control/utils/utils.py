@@ -139,7 +139,8 @@ def get_verbalized_grads_from_wrapped_model(wrapped_model,
                                             norm=1,
                                             top_k=20,
                                             step_size=1,
-                                            gradient_manipulation: str="clipping"
+                                            gradient_manipulation: str="clipping",
+                                            binary=False,
                                             ):
     """
     Calculate cross entropy loss over a subset of the vocabulary.
@@ -176,22 +177,30 @@ def get_verbalized_grads_from_wrapped_model(wrapped_model,
             # tokenized["input_ids"] = torch.cat([tokenized["input_ids"], last_pred_token.unsqueeze(dim=0).view(-1, 1)], dim=1)
             # tokenized["attention_mask"] = torch.cat([tokenized["attention_mask"], torch.ones_like(last_pred_token).unsqueeze(dim=0).view(-1, 1)], dim=1)
             # print(tokenizer.batch_decode(tokenized["input_ids"]))
-        one_hot_dist = torch.zeros(outputs.logits.size(0), outputs.logits.shape[-1])
-        one_hot_dist[:, targets[0].cpu().numpy()] = 1
-        one_hot_dist = label_smoothing(one_hot_dist, smoothing=smoothing)
-        loss = loss_fct(outputs.logits[:, -1, :], one_hot_dist.to(wrapped_model.model.device))
+        if not binary:
+            one_hot_dist = torch.zeros(outputs.logits.size(0), outputs.logits.shape[-1])
+            one_hot_dist[:, targets[0].cpu().numpy()] = 1
+            one_hot_dist = label_smoothing(one_hot_dist, smoothing=smoothing)
+            loss = loss_fct(outputs.logits[:, -1, :], one_hot_dist.to(wrapped_model.model.device))
+        elif binary:
+            # only consider that all the targets are the same for now
+            if targets[0] == yes_token:
+                loss = torch.sum(-1 / (1 + torch.exp(-(outputs.logits[:, -1, yes_token] - outputs.logits[:, -1, no_token]))))
+            elif targets[0] == no_token:
+                loss = torch.sum(-1 / (1 + torch.exp(-(outputs.logits[:, -1, no_token] - outputs.logits[:, -1, yes_token]))))
+            else:
+                raise ValueError(f"Unknown {targets[0]}")
+            
+            # loss = loss_fct(torch.cat([outputs.logits[:, -1, yes_token:yes_token+1], outputs.logits[:, -1, no_token:no_token+1]], dim=-1), one_hot_dist.to(wrapped_model.model.device))
+        # one_hot_dist = torch.zeros(outputs.logits.size(0), outputs.logits.shape[-1])
+        # one_hot_dist[:, targets[0].cpu().numpy()] = 1
+        # one_hot_dist = label_smoothing(one_hot_dist, smoothing=smoothing)
 
-        # # one_hot_dist = torch.zeros(outputs.logits.size(0), outputs.logits.shape[-1])
-        # # one_hot_dist[:, targets[0].cpu().numpy()] = 1
-        # # one_hot_dist = label_smoothing(one_hot_dist, smoothing=smoothing)
-        # one_hot_dist = torch.zeros(outputs.logits.size(0), 2)
-        # one_hot_dist[:, 1] = 1
-        # print(torch.cat([outputs.logits[:, -1, yes_token:yes_token+1], outputs.logits[:, -1, no_token:no_token+1]], dim=-1))
-        # loss = loss_fct(torch.cat([outputs.logits[:, -1, yes_token:yes_token+1], outputs.logits[:, -1, no_token:no_token+1]], dim=-1), one_hot_dist.to(wrapped_model.model.device))
 
         grads = {}
         norms = {}
         hidden_states = outputs.hidden_states[1:] # outputs.hidden_states[0] is the embedding layer
+        orig_norm = torch.norm(torch.stack([hidden_state for hidden_state in hidden_states]), p=2, dim=-1)
         if gradient_manipulation == "pgd":
             X_pgd = {}
             for i in range(len(hidden_states)):
@@ -253,7 +262,7 @@ def get_verbalized_grads_from_wrapped_model(wrapped_model,
             ret_prob_list.append(prob[target_idx])
         logits = outputs.logits
 
-    return grads, outputs, loss, ret_prob_list, logits, norms
+    return grads, outputs, loss, ret_prob_list, logits, norms, orig_norm
 
 def get_verbalized_grads(model, tokenizer, inputs: str, loss_fct, targets, verbalizer: List[int]):
     """
@@ -457,10 +466,11 @@ def search_step_size(orig_input: str,
                                 layer_ids: List[int]=list(range(0, 32, 1)),
                                 smoothing=0,
                                 top_k=10,
+                                norm_aware=False,
                                 initial_step_size: float=0.1,
                                 loss_threshold: float=1e-5,
                                 max_iterations: int=3,
-                                scale_factor: float=0.8,
+                                scale_factor: float=0.5,
                                 initial_grads_loss: Dict=None,
                                 do_sample=False,
                                 verbose=False,
@@ -496,6 +506,10 @@ def search_step_size(orig_input: str,
     best_loss = initial_grads_loss["loss"]
     best_step_size = initial_step_size
     current_step_size = initial_step_size
+
+    if norm_aware:
+        # current_step_size = 
+        pass
     
     # grads, outputs, loss, probs, logits, norms = get_verbalized_grads_from_wrapped_model(
     #     inputs=input_with_suffix,
@@ -541,7 +555,7 @@ def search_step_size(orig_input: str,
                 assert target_token.shape[-1] == 1, "Target should be a single token for now."
                 target_token = (target_token * torch.ones(1).long()).to(wrapped_model.model.device)
                 verbalizer = [target_token[0]]
-                grads, outputs, loss, probs, logits, norms = get_verbalized_grads_from_wrapped_model(
+                grads, outputs, loss, probs, logits, norms, orig_norm = get_verbalized_grads_from_wrapped_model(
                     wrapped_model=wrapped_model,
                     tokenizer=tokenizer,
                     inputs=[input + suffix_string for input in wrapped_model.generate(**orig_input, do_sample=do_sample, **control_args)],
@@ -564,7 +578,7 @@ def search_step_size(orig_input: str,
         else:
             input_with_suffix = [input + suffix.suffix for input in wrapped_model.generate(**orig_input, do_sample=do_sample, **control_args)]
             wrapped_model.reset()
-            _, outputs, loss, probs, logits, norms = get_verbalized_grads_from_wrapped_model(
+            _, outputs, loss, probs, logits, norms, orig_norm = get_verbalized_grads_from_wrapped_model(
                 inputs=input_with_suffix,
                 wrapped_model=wrapped_model,
                 tokenizer=tokenizer,

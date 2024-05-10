@@ -51,7 +51,7 @@ def generate_seed_queries(num_queries) -> List[Tuple[str]]:
             "role": "user",
             "content": SEED_PROMPT[args.attribute].format(
                 system_prompt=DATA_GENERATOR_SYS,
-                theme_prompt=THEME_PROMPT[0],
+                theme_prompt=THEME_PROMPT[args.attribute],
                 principle=PRINCIPLE_PROMPTS[args.attribute],
                 num_queries=10
                 )
@@ -87,7 +87,7 @@ def generate_seed_queries(num_queries) -> List[Tuple[str]]:
             # ret_list.append((query, response))
     ret_list = []
     for response_item in response_list:
-        if response_item.strip() != "":
+        if response_item.strip().rstrip() != "":
             ret_list.append(response_item)
     return response_list
 
@@ -98,20 +98,25 @@ def main():
     if not os.path.exists(folder_path):
         os.makedirs(folder_path)
         print(f"Folder '{folder_path}' created.")
-    num_queries = 1
-    seed_queries = generate_seed_queries(num_queries)
-    data_path = os.path.join(folder_path, args.attribute+"_seed_queries.json")
-    # for seed_query in seed_queries:
-    if os.path.exists(data_path):
-        with open(data_path, 'r') as f:
-            seed_queries += eval(f.read())
-        seed_queries = list(set(seed_queries))
-    with open(data_path, "w") as f:
-        # data_dict = {
-        #     "query": seed_query[0],
-        #     "response": seed_query[1]
-        # }
-        f.write(json.dumps(seed_queries, indent=4))
+    seed_queries = []
+    while len(seed_queries) < 200:
+        num_queries = 1
+        seed_queries = generate_seed_queries(num_queries)
+        data_path = os.path.join(folder_path, args.attribute+"_seed_queries.json")
+        # for seed_query in seed_queries:
+        if os.path.exists(data_path):
+            with open(data_path, 'r') as f:
+                seed_queries += eval(f.read())
+            seed_queries = list(set(seed_queries))
+        with open(data_path, "w") as f:
+            # data_dict = {
+            #     "query": seed_query[0],
+            #     "response": seed_query[1]
+            # }
+            f.write(json.dumps(seed_queries, indent=4))
+        time.sleep(1)
 
 if __name__ == "__main__":
     main()
+
+# Usage: 

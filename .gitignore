@@ -5,6 +5,7 @@ __pycache__/
 *.pyc
 output/
 outputs/
+output_scored/
 *.bin
 wandb/
 results/

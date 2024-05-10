@@ -1,4 +1,4 @@
-from .prompts import SCORER_SYS, SCORER_SEED_PROMPT, PRINCIPLE_PROMPTS
+from .prompts import SCORER_SYS, SCORER_SEED_PROMPT, PRINCIPLE_PROMPTS, EMOTION_SYS
 from openai import OpenAI
 from sklearn.metrics import roc_curve, auc
 from tqdm import tqdm
@@ -14,13 +14,19 @@ client = OpenAI(api_key="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")
 class GPTScorer:
 
     def score(self, query, response, attribute):
-        principle = PRINCIPLE_PROMPTS[attribute]
-        scorer_prompt = SCORER_SEED_PROMPT.format(
-            system_prompt=SCORER_SYS,
-            principle=principle,
-            query=query,
-            response=response
-        )
+        if attribute in ["happy", "angry", "disgusted", "surprised", "afraid"]:
+            scorer_prompt = EMOTION_SYS.format(
+                attribute=attribute,
+                output=response
+            )
+        else:
+            principle = PRINCIPLE_PROMPTS[attribute]
+            scorer_prompt = SCORER_SEED_PROMPT.format(
+                system_prompt=SCORER_SYS,
+                principle=principle,
+                query=query,
+                response=response
+            )
         score_list = []
         while True:
             done = False

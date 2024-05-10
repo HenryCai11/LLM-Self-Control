@@ -186,6 +186,7 @@ class WrappedReadingVecModel(torch.nn.Module):
                             norm=1,
                             epsilon=0.3,
                             annealing: float=1,
+                            binary=False,
                             **kwargs    # for the generate function
                             ):
         """
@@ -224,15 +225,11 @@ class WrappedReadingVecModel(torch.nn.Module):
             query_length = input_ids.size(1) if len(input_ids.shape) == 2 else input_ids.size(0) # size(0) might be the batch size
         if return_intermediate:
             iterative_outputs = []
-        if n_branches > 1:
-              if prompt is None:
-                 controlled_output = self.suffix_decoding(input_ids=input_ids, attention_mask=attention_mask, 
-                                                          n_branches=n_branches, suffix=suffix, **kwargs)
-              else:
-                  controlled_output = self.suffix_decoding(prompt=prompt, n_branches=n_branches, suffix=suffix, **kwargs)
-            # self.suffix_decoding(prompt, n_branches=n_branches, suffix=suffix, **kwargs)
-        else:
-            controlled_output = self.generate(**inputs, use_cache=use_cache, do_sample=do_sample, **kwargs) # the original output
+        # if n_branches > 1:
+        #     controlled_output = self.suffix_decoding(prompt, n_branches=n_branches, suffix=suffix, **kwargs)
+        #     # self.suffix_decoding(prompt, n_branches=n_branches, suffix=suffix, **kwargs)
+        # else:
+        controlled_output = self.generate(**inputs, use_cache=use_cache, do_sample=do_sample, **kwargs) # the original output
         original_output = deepcopy(controlled_output)
         if verbose:
             print("Coeff: ", orig_coeff)
@@ -259,7 +256,7 @@ class WrappedReadingVecModel(torch.nn.Module):
                     assert target_token.shape[-1] == 1, "Target should be a single token for now."
                     target_token = (target_token * torch.ones(gradient_bs).long()).to(self.model.device)
                     verbalizer = [target_token[0]]
-                    grads, outputs, loss, probs, logits, norms = get_verbalized_grads_from_wrapped_model(
+                    grads, outputs, loss, probs, logits, norms, orig_norm = get_verbalized_grads_from_wrapped_model(
                         wrapped_model=self,
                         tokenizer=self.tokenizer,
                         inputs=[output + suffix_string for output in controlled_output],
@@ -272,6 +269,7 @@ class WrappedReadingVecModel(torch.nn.Module):
                         norm=norm,
                         step_size=orig_coeff,
                         gradient_manipulation=gradient_manipulation,
+                        binary=binary,
                     )
                     multi_loss += loss.item()
                     # FIXME: fix the hard-coded normalization
@@ -303,6 +301,7 @@ class WrappedReadingVecModel(torch.nn.Module):
                     norm=norm,
                     step_size=orig_coeff,
                     gradient_manipulation=gradient_manipulation,
+                    binary=binary,
                 )
             if iter == 0:
                 orig_prob = probs
@@ -324,7 +323,9 @@ class WrappedReadingVecModel(torch.nn.Module):
 
             # TODO: add search for multi-principle control
             if search:
-                step_size, _ = search_step_size(
+                if n_branches > 1:
+                    warnings.warn("Branching may not be compatible with searching")
+                step_size, best_loss = search_step_size(
                     orig_input              =   inputs,
                     suffix                  =   suffix,
                     random_seed             =   random_seed,
@@ -352,7 +353,7 @@ class WrappedReadingVecModel(torch.nn.Module):
                 self.reset()
                 coeff = step_size
                 if gradient_manipulation == "pgd":  # TODO: optimize this
-                    grads, outputs, loss, probs, logits, norms = get_verbalized_grads_from_wrapped_model(
+                    grads, outputs, loss, probs, logits, norms, orig_norm = get_verbalized_grads_from_wrapped_model(
                         wrapped_model=self,
                         tokenizer=self.tokenizer,
                         inputs=controlled_output,
@@ -365,6 +366,7 @@ class WrappedReadingVecModel(torch.nn.Module):
                         norm=norm,
                         step_size=coeff,
                         gradient_manipulation=gradient_manipulation,
+                        binary=binary,
                     )
                 #loss = best_loss
             if gradient_manipulation == "pgd":  # If pgd then it's already controlled with the step size
@@ -383,6 +385,9 @@ class WrappedReadingVecModel(torch.nn.Module):
                     temp_grads[i] = grads[i].detach().cpu().clone()
                 grad_list.append(temp_grads)
                 del temp_grads
+            # if n_branches > 1:
+            #     controlled_output = self.suffix_decoding(single_prompt, n_branches=n_branches, suffix=suffix, **kwargs)
+            # else:
             self.control_on_layers(
                 layer_ids=layer_ids,
                 grads=acc_grads,
@@ -390,7 +395,7 @@ class WrappedReadingVecModel(torch.nn.Module):
                 token_pos=token_pos,
                 gradient_manipulation=gradient_manipulation,
                 epsilon=epsilon
-            )
+                )
             if n_branches > 1:
                 if prompt is not None:
                     controlled_output = self.suffix_decoding(prompt, n_branches=n_branches, suffix=suffix, **kwargs)
@@ -428,7 +433,7 @@ class WrappedReadingVecModel(torch.nn.Module):
                 assert target_token.shape[-1] == 1, "Target should be a single token for now."
                 target_token = (target_token * torch.ones(gradient_bs).long()).to(self.model.device)
                 verbalizer = [target_token[0]]
-                grads, outputs, loss, probs, logits, norms = get_verbalized_grads_from_wrapped_model(
+                grads, outputs, loss, probs, logits, norms, orig_norm = get_verbalized_grads_from_wrapped_model(
                     wrapped_model=self,
                     tokenizer=self.tokenizer,
                     inputs=[output + suffix_string for output in controlled_output],
@@ -441,12 +446,13 @@ class WrappedReadingVecModel(torch.nn.Module):
                     norm=norm,
                     step_size=orig_coeff,
                     gradient_manipulation=gradient_manipulation,
+                    binary=binary,
                 )
                 multi_loss += loss.item()
             loss = multi_loss
         else:
             controlled_output = [output + suffix.suffix for output in controlled_output]
-            grads, outputs, loss, probs, logits, norms = get_verbalized_grads_from_wrapped_model(
+            grads, outputs, loss, probs, logits, norms, orig_norm = get_verbalized_grads_from_wrapped_model(
                 wrapped_model=self,
                 tokenizer=self.tokenizer,
                 inputs=controlled_output,
@@ -459,6 +465,7 @@ class WrappedReadingVecModel(torch.nn.Module):
                 norm=norm,
                 step_size=coeff,
                 gradient_manipulation=gradient_manipulation,
+                binary=binary,
             )
         if loss < best_loss:
             best_loss = loss
@@ -545,6 +552,7 @@ class WrappedReadingVecModel(torch.nn.Module):
                         attention_mask: None,
                         prompt: List[str]=None,
                         suffix: Union[SuffixItem, List[SuffixItem]]=None,
+                        return_all=False,
                         n_branches=3,
                         **kwargs):
         if prompt is not None:
@@ -582,7 +590,11 @@ class WrappedReadingVecModel(torch.nn.Module):
         for i in range(bsz):
             outputs = self.tokenizer.batch_decode(gen_ids[i], skip_special_tokens=True)
             score_list = self.get_suffix_score(outputs, suffix)
-            ret_list.append(outputs[np.argmax(score_list)])
+            if not return_all:
+                ret_list.append(outputs[np.argmax(score_list)])
+            else:
+                ret_list.append(outputs)
+        
         return ret_list
         
     def generate(self,

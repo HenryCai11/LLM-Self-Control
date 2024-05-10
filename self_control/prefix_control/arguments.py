@@ -12,23 +12,27 @@ def get_args():
     parser.add_argument("--batchsize", type=int, default=8)
     parser.add_argument("--accumulation_steps", type=int, default=4)
     parser.add_argument("--prefix_length", type=int, default=10)
-    parser.add_argument("--search", type=bool, default=True)
+    parser.add_argument("--search", type=bool, default=False)
     parser.add_argument("--add_kl", default=False, action="store_true")
     parser.add_argument("--schedule_type", type=str, default="constant", help="Type of scheduler, including `constant`, `linear`, and `cosine`")
-    parser.add_argument("--warmup", type=float, default=0.1, help="Wramup rate")
+    parser.add_argument("--warmup", type=float, default=0.4, help="Wramup rate")
     parser.add_argument("--lr", type=float, default=0.009, help="Learning rate")
     parser.add_argument("--shuffle", type=bool, default=True)
     parser.add_argument("--eval_step", type=int, default=10)
     parser.add_argument("--epoch", type=int, default=5)
+    parser.add_argument("--max_steps", type=int, help="Max Steps")
 
     parser.add_argument("--searching", action="store_true", help="If `searching=True` then do searching")
     parser.add_argument("--do_test", action="store_true", help="If `do_train=False` then only do test")
     parser.add_argument("--pick_by_eval", action="store_true", help="Pick checkpoint by eval_loss")
     parser.add_argument("--max_num_data", type=int, default=None, help="Max number of data loaded from the dataset")
+    parser.add_argument("--test_at_beginning", action="store_true", help="Whether or not test at the beginning")
+    parser.add_argument("--name_prefix", type=str, help="Prefix added to the wandb run name")
+    parser.add_argument("--test_original", action="store_true", help="Test with the original model")
 
     # adapter
     parser.add_argument("--peft_type", type=str, default="llama-adapter")
-    parser.add_argument("--adapter_len", type=int, default=10, help="Length of adapter")
+    parser.add_argument("--adapter_len", type=int, default=128, help="Length of adapter")
     parser.add_argument("--adapter_layers", type=int, default=30)
 
     # names
