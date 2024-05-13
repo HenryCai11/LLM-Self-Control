@@ -13,8 +13,9 @@ do
         --do_sample \
         --batchsize 2 \
         --init_coeff -2 \
-        --iteration 5 \
+        --iteration 2 \
         --return_hiddens \
+        --add_inst \
         --add_prefix \
         --max_norm 1
 
@@ -31,6 +32,7 @@ do
         --iteration 2 \
         --return_hiddens \
         --max_norm 1 \
+        --add_inst \
         --add_prefix
 
 done

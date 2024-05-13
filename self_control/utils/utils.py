@@ -255,11 +255,17 @@ def get_verbalized_grads_from_wrapped_model(wrapped_model,
         
         # print(grads)
         ret_prob_list = []
-        probs = softmax(outputs.logits[:, -1, [yes_token, no_token]].detach().cpu().numpy())
-        for prob in probs:
-            target_idx = torch.where(torch.tensor([yes_token, no_token]).cpu() == targets[0].cpu())[0]
-            neg_target_idx = torch.where(torch.tensor([yes_token, no_token]).cpu() != targets[0].cpu())[0]
-            ret_prob_list.append(prob[target_idx])
+        # probs = softmax(outputs.logits[:, -1, [yes_token, no_token]].detach().cpu().numpy() / 10)
+        # for idx in range(outputs.logits.size(0)):
+        if targets[0] == yes_token:
+            ret_probs = 1 / (1 + torch.exp(-(outputs.logits[:, -1, yes_token] / 10 - outputs.logits[:, -1, no_token] / 10))).detach().cpu().numpy()
+        elif targets[0] == no_token:
+            ret_probs = 1 / (1 + torch.exp(-(outputs.logits[:, -1, no_token] / 10 - outputs.logits[:, -1, yes_token] / 10))).detach().cpu().numpy()
+        ret_prob_list.append(float(ret_probs))
+        # for prob in ret_probs:
+        #     target_idx = torch.where(torch.tensor([yes_token, no_token]).cpu() == targets[0].cpu())[0]
+            # neg_target_idx = torch.where(torch.tensor([yes_token, no_token]).cpu() != targets[0].cpu())[0]
+            # ret_prob_list.append(prob[target_idx])
         logits = outputs.logits
 
     return grads, outputs, loss, ret_prob_list, logits, norms, orig_norm
@@ -458,7 +464,7 @@ def vanilla_control(model: AutoModelForCausalLM,
     )
     return wrapped_model, acc_grads, loss, probs
 
-def search_step_size(orig_input: str,
+def search_step_size(orig_input: Dict,
                                 wrapped_model,
                                 suffix: Union[SuffixItem, List[SuffixItem]],
                                 acc_grads: Dict={},
@@ -470,7 +476,7 @@ def search_step_size(orig_input: str,
                                 initial_step_size: float=0.1,
                                 loss_threshold: float=1e-5,
                                 max_iterations: int=3,
-                                scale_factor: float=0.5,
+                                scale_factor: float=2,
                                 initial_grads_loss: Dict=None,
                                 do_sample=False,
                                 verbose=False,
@@ -492,6 +498,7 @@ def search_step_size(orig_input: str,
     Return:
         The best step size
     """
+    wrapped_model.reset()
     query_length = control_args.pop("query_length")
     tokenizer = control_args.pop("tokenizer")
     loss_fct = control_args.pop("loss_fct")
@@ -500,10 +507,13 @@ def search_step_size(orig_input: str,
 
     input_with_suffix = initial_grads_loss["controlled_output"]
     loss = initial_grads_loss["loss"]
+    score = initial_grads_loss["score"]
     grads = initial_grads_loss["grads"]
 
     # Initialize variables
     best_loss = initial_grads_loss["loss"]
+    best_score = score
+    print(f"Initial Score {best_score}")
     best_step_size = initial_step_size
     current_step_size = initial_step_size
 
@@ -548,6 +558,7 @@ def search_step_size(orig_input: str,
         if isinstance(suffix, list):
             composed_grads = {}
             multi_loss = 0
+            multi_score = 0
             for suffix_item in suffix:
                 suffix_string = suffix_item.suffix
                 target = suffix_item.target
@@ -555,10 +566,13 @@ def search_step_size(orig_input: str,
                 assert target_token.shape[-1] == 1, "Target should be a single token for now."
                 target_token = (target_token * torch.ones(1).long()).to(wrapped_model.model.device)
                 verbalizer = [target_token[0]]
+                input_list = [input + suffix_string for input in wrapped_model.generate(**orig_input, do_sample=do_sample, **control_args)]
+                print(input_list)
+                wrapped_model.reset()
                 grads, outputs, loss, probs, logits, norms, orig_norm = get_verbalized_grads_from_wrapped_model(
                     wrapped_model=wrapped_model,
                     tokenizer=tokenizer,
-                    inputs=[input + suffix_string for input in wrapped_model.generate(**orig_input, do_sample=do_sample, **control_args)],
+                    inputs=input_list,
                     loss_fct=loss_fct,
                     targets=target_token,
                     verbalizer=verbalizer,
@@ -568,16 +582,19 @@ def search_step_size(orig_input: str,
                     norm=1,
                     gradient_manipulation=gradient_manipulation,
                 )
-                multi_loss += loss.item()
+                # multi_loss += loss.item()
+                multi_score += sum(probs)
                 # FIXME: fix the hard-coded normalization
                 composed_grads = {k: (composed_grads[k][:, :query_length] + grads[k][:, :query_length] * suffix_item.direction * 0.5) if k in composed_grads else grads[k][:, :query_length] * 0.5\
                                     for k in set(grads)}
             grads = composed_grads
             del composed_grads
-            loss = multi_loss
+            # loss = multi_loss
+            score = multi_score / len(suffix)
         else:
             input_with_suffix = [input + suffix.suffix for input in wrapped_model.generate(**orig_input, do_sample=do_sample, **control_args)]
-            wrapped_model.reset()
+            print(input_with_suffix)
+            wrapped_model.unwrap()
             _, outputs, loss, probs, logits, norms, orig_norm = get_verbalized_grads_from_wrapped_model(
                 inputs=input_with_suffix,
                 wrapped_model=wrapped_model,
@@ -589,17 +606,21 @@ def search_step_size(orig_input: str,
                 top_k=top_k,
                 gradient_manipulation=gradient_manipulation,
             )
+            print(probs, best_score)
+            score = sum(probs)
         if verbose:
             print(f"Input w/ suffix: {input_with_suffix}")
             print(f"Loss: {loss}")
 
-        del outputs, probs, logits, norms
+        del outputs, logits, norms
         
         # Check if the loss is better than what we have seen so far
-        if loss < best_loss:
-            best_loss = loss
+        # if loss < best_loss:
+        if score - best_score > 0.05:
+            # best_loss = loss
+            best_score = score
             best_step_size = test_step_size
-            return best_step_size, best_loss
+            return best_step_size, best_score
             # # Check if the loss is below the threshold
             # if loss <= loss_threshold:
             #     # print(f"Better Step-size found: {best_step_size}, Loss: {loss}")
@@ -612,7 +633,8 @@ def search_step_size(orig_input: str,
         current_step_size *= scale_factor
     if verbose:
         print(f"Best step-size found: {best_step_size}, Loss: {best_loss}")
-    return best_step_size, best_loss
+    # return best_step_size, best_loss
+    return best_step_size, best_score
 
 
 def KL_divergence(p, q, epsilon=1e-9):

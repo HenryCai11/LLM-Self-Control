@@ -12,7 +12,7 @@ do
         --search \
         --do_sample \
         --batchsize 2 \
-        --init_coeff -3 \
+        --init_coeff -5 \
         --iteration 2 \
         --return_hiddens \
         --add_inst \
@@ -28,7 +28,7 @@ do
         --search \
         --do_sample \
         --batchsize 2 \
-        --init_coeff -3 \
+        --init_coeff -5 \
         --iteration 2 \
         --return_hiddens \
         --max_norm 1 \

@@ -144,7 +144,8 @@ class SuffixControlDataset(Dataset):
             # We concat the prefix and the input in the collate_fn
             dot_token_ids = [self.tokenizer.convert_tokens_to_ids(".")]
             prefix_token_ids = self.tokenizer.encode("<<SYS>> You are an assistant <</SYS>>", add_special_tokens=False)
-            prefix_input_ids = torch.tensor(prefix_token_ids + dot_token_ids * 5).unsqueeze(dim=0)
+            # prefix_input_ids = torch.tensor(prefix_token_ids + dot_token_ids * 5).unsqueeze(dim=0)
+            prefix_input_ids = torch.arange(len(prefix_token_ids + dot_token_ids * 5)).unsqueeze(dim=0)
             bos_token = torch.tensor([self.tokenizer.bos_token_id]).unsqueeze(dim=0)
             prefix_input_ids = torch.cat([bos_token, prefix_input_ids], dim=-1)
             # prefix_input_ids = torch.arange(0, 10).unsqueeze(dim=0)
@@ -191,7 +192,7 @@ if args.do_test:
             dot_token_ids = [tokenizer.convert_tokens_to_ids(".")]
             prefix_token_ids = tokenizer.encode("<<SYS>> You are an assistant <</SYS>>", add_special_tokens=False)
             prefix_token_ids = torch.tensor(prefix_token_ids + dot_token_ids * 5).unsqueeze(dim=0)
-            model.prefix_embedder = nn.Embedding(num_embeddings=len(prefix_token_ids), embedding_dim=model.config.hidden_size)
+            model.prefix_embedder = nn.Embedding(num_embeddings=prefix_token_ids.size(1), embedding_dim=model.config.hidden_size)
             prefix_embedder_dir = os.path.join(checkpoint_name, "prefix_embedder.pth")
             model.prefix_embedder.load_state_dict(torch.load(prefix_embedder_dir))
     # pass
@@ -203,11 +204,12 @@ elif args.peft_type != "full":
         dot_token_ids = [tokenizer.convert_tokens_to_ids(".")]
         prefix_token_ids = tokenizer.encode("<<SYS>> You are an assistant <</SYS>>", add_special_tokens=False)
         prefix_token_ids = torch.tensor(prefix_token_ids + dot_token_ids * 5).unsqueeze(dim=0)
-        prefix_token_ids_tensor = torch.tensor(prefix_token_ids).unsqueeze(dim=0)
+        prefix_token_ids_tensor = torch.tensor(prefix_token_ids)
         prefix_embeddings = model.base_model.model.model.embed_tokens(prefix_token_ids_tensor.to(model.device)).to('cpu')
-        model.prefix_embedder = nn.Embedding(num_embeddings=len(prefix_token_ids), embedding_dim=model.config.hidden_size)
-        model.prefix_embedder.weight.data.copy_(prefix_embeddings.squeeze(dim=0))
+        model.prefix_embedder = nn.Embedding(num_embeddings=prefix_token_ids.size(1), embedding_dim=model.config.hidden_size)
         print(f"Embedder shape: {model.prefix_embedder.weight.shape}")
+        print(f"Prefix Embedding shape: {prefix_embeddings.shape}")
+        model.prefix_embedder.weight.data.copy_(prefix_embeddings.squeeze(dim=0))
 
     model.print_trainable_parameters()
 
@@ -283,7 +285,7 @@ def compute_loss(model, inputs, target_layers: List, alpha: float, return_output
     #     self.log({"kl": kl_loss})
     #     loss += kl_loss / args.accumulation_steps
     if args.peft_type == "prefix+adapter":
-        del grads, input_ids, attention_mask, orig_outputs, orig_hidden, target_hidden
+        del grads, input_embeds, attention_mask, orig_outputs, orig_hidden, target_hidden
     else:
         del grads, input_ids, attention_mask, orig_outputs, orig_hidden, target_hidden
 
@@ -698,12 +700,12 @@ def collate_fn(batch):
                                    zip(prefix_mask_list, attention_mask_list)]
         else:
             raise NotImplementedError
-        print(f"Shape of input embed: {input_embeds_list[0].shape}")
-        print(f"Shape of padded embed: {pad_embeds(input_embeds_list[0], 36).shape}")
+        # print(f"Shape of input embed: {input_embeds_list[0].shape}")
+        # print(f"Shape of padded embed: {pad_embeds(input_embeds_list[0], 36).shape}")
         max_embeds_length = max(
             embeds.size(1) for embeds in input_embeds_list
         )
-        print(f"Max embeds length: {max_embeds_length}")
+        # print(f"Max embeds length: {max_embeds_length}")
         padded_embeds_list = [pad_embeds(embeds, max_embeds_length) for embeds in input_embeds_list]
         padded_embeds = torch.cat(padded_embeds_list, dim=0)
         padded_input_ids = pad_sequences_left(concat_input_ids_list, pad_value=0)  # Assuming 0 is the padding value for input_ids
@@ -862,9 +864,9 @@ if not args.do_test:
             if args.pick_by_eval:
                 model.save_pretrained(checkpoint_name)
                 if args.peft_type == "prefix+adapter":
-                    pass
-                    # prefix_embedder_dir = os.path.join(checkpoint_name, "prefix_embedder.pth")
-                    # torch.save(model.prefix_embedder.state_dict(), prefix_embedder_dir)
+                    # pass
+                    prefix_embedder_dir = os.path.join(checkpoint_name, "prefix_embedder.pth")
+                    torch.save(model.prefix_embedder.state_dict(), prefix_embedder_dir)
         # else:
         #     if epoch % 2 == 0:
         #         eval_loss = evaluate(model, eval_loader, final_test=True)

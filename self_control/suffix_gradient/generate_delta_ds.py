@@ -289,7 +289,7 @@ class DataGenerator:
                 with open(data_path, "r") as f:
                     data_list = eval(f.read())
                 for data_item in data_list:
-                    prompts.append(f"{data_item} It's your turn to speak. Say something to other players.")
+                    prompts.append(f"{data_item} It's your turn to speak. Please start a conversation with other players")
                 prompts = prompts[start:end]
 
             elif "reasoning" in attribute:
@@ -532,7 +532,9 @@ class DataGenerator:
                                     "orig_norm": orig_norm.cpu().item(),
                                     "norm": norm.cpu().item(),
                                     "orig_suffix_score": float(outputs["orig_prob"][i]),
-                                    "final_suffix_score": float(outputs["prob"][i])
+                                    "final_suffix_score": float(outputs["prob"][i]),
+                                    "intermediate_scores": outputs["score_list"],
+                                    "intermediate_scores_verbose": outputs["score_list_verbose"]
                                 }))
                                 f.write("\n")
                     # save all the data into this file
@@ -547,7 +549,9 @@ class DataGenerator:
                             "orig_norm": orig_norm.cpu().item(),
                             "norm": norm.cpu().item(),
                             "orig_suffix_score": float(outputs["orig_prob"][i]),
-                            "final_suffix_score": float(outputs["prob"][i])
+                            "final_suffix_score": float(outputs["prob"][i]),
+                            "intermediate_scores": outputs["score_list"],
+                            "intermediate_scores_verbose": outputs["score_list_verbose"]
                         }))
                         f.write("\n")
 
@@ -642,7 +646,10 @@ if __name__ == "__main__":
     # Suffix as defined elsewhere in your code
     suffix_manager = SuffixManager(args)
     suffix = suffix_manager.get_suffix(args.attribute)
-    print("Using suffix: ", suffix.suffix)
+    if isinstance(suffix, list):
+        print("Using suffix: ", [suffix_item.suffix for suffix_item in suffix])
+    else:
+        print("Using suffix: ", suffix.suffix)
 
     # data preparation
     script_dir = os.path.dirname(os.path.abspath(__file__))
