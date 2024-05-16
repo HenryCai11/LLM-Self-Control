@@ -513,6 +513,7 @@ def search_step_size(orig_input: Dict,
     # Initialize variables
     best_loss = initial_grads_loss["loss"]
     best_score = score
+    best_verbose_scores = []
     print(f"Initial Score {best_score}")
     best_step_size = initial_step_size
     current_step_size = initial_step_size
@@ -555,6 +556,7 @@ def search_step_size(orig_input: Dict,
             query_length=query_length,
             token_pos=token_pos,
         )
+        verbose_scores = []
         if isinstance(suffix, list):
             composed_grads = {}
             multi_loss = 0
@@ -584,6 +586,7 @@ def search_step_size(orig_input: Dict,
                 )
                 # multi_loss += loss.item()
                 multi_score += sum(probs)
+                verbose_scores.append(sum(probs))
                 # FIXME: fix the hard-coded normalization
                 composed_grads = {k: (composed_grads[k][:, :query_length] + grads[k][:, :query_length] * suffix_item.direction * 0.5) if k in composed_grads else grads[k][:, :query_length] * 0.5\
                                     for k in set(grads)}
@@ -591,10 +594,11 @@ def search_step_size(orig_input: Dict,
             del composed_grads
             # loss = multi_loss
             score = multi_score / len(suffix)
+            print(score)
+            print(verbose_scores)
         else:
             input_with_suffix = [input + suffix.suffix for input in wrapped_model.generate(**orig_input, do_sample=do_sample, **control_args)]
-            print(input_with_suffix)
-            wrapped_model.unwrap()
+            wrapped_model.reset()
             _, outputs, loss, probs, logits, norms, orig_norm = get_verbalized_grads_from_wrapped_model(
                 inputs=input_with_suffix,
                 wrapped_model=wrapped_model,
@@ -606,8 +610,8 @@ def search_step_size(orig_input: Dict,
                 top_k=top_k,
                 gradient_manipulation=gradient_manipulation,
             )
-            print(probs, best_score)
             score = sum(probs)
+            verbose_scores.append(score)
         if verbose:
             print(f"Input w/ suffix: {input_with_suffix}")
             print(f"Loss: {loss}")
@@ -616,11 +620,12 @@ def search_step_size(orig_input: Dict,
         
         # Check if the loss is better than what we have seen so far
         # if loss < best_loss:
-        if score - best_score > 0.05:
+        if score - best_score > 0:
             # best_loss = loss
             best_score = score
+            best_verbose_scores = verbose_scores
             best_step_size = test_step_size
-            return best_step_size, best_score
+            return best_step_size, best_score, best_verbose_scores
             # # Check if the loss is below the threshold
             # if loss <= loss_threshold:
             #     # print(f"Better Step-size found: {best_step_size}, Loss: {loss}")
@@ -634,7 +639,7 @@ def search_step_size(orig_input: Dict,
     if verbose:
         print(f"Best step-size found: {best_step_size}, Loss: {best_loss}")
     # return best_step_size, best_loss
-    return best_step_size, best_score
+    return best_step_size, best_score, best_verbose_scores
 
 
 def KL_divergence(p, q, epsilon=1e-9):

@@ -272,14 +272,14 @@ class DataGenerator:
                     with open(data_path, "r") as f:
                         for line in f:
                             data_item = eval(line)
-                            prompts.append(f"{data_item['query']}")
+                            prompts.append(f"Q: {data_item['query']}\nA:")
                 else:
                     data_path = "/home/cmin/LLM-Interpretation-Playground/benchmarks/rlhf/processed_test.jsonl"
                     prompts = []
                     with open(data_path, "r") as f:
                         for line in f:
                             data_item = eval(line)
-                            prompts.append(f"{data_item['query']}")
+                            prompts.append(f"Q: {data_item['query']}\nA:")
             elif "avalon" in attribute:
                 start = args.start_from_idx
                 end = args.start_from_idx + args.max_num_data
@@ -511,11 +511,14 @@ class DataGenerator:
                     if passed:
                         add_to_ds = False
                         if args.attribute == "noleakidentity":
-                            if float(outputs["prob"][i]) > float(outputs["orig_prob"][i]) and float(outputs["prob"][i]) > 0.3:
+                            if float(outputs["prob"]) > float(outputs["orig_prob"]) and float(outputs["prob"]) > 0.3:
                                 add_to_ds = True
                         else:
-                            if float(outputs["prob"][i]) > float(outputs["orig_prob"][i]):
+                            if float(outputs["prob"]) > float(outputs["orig_prob"]):
                                 add_to_ds = True
+                        print(f"norm: {norm}")
+                        if norm.cpu().item() == 0:
+                            add_to_ds = False
                         # if args.add_everything:
                         #     add_to_ds = True
                         if add_to_ds:
@@ -531,8 +534,8 @@ class DataGenerator:
                                     "intermediate_responses": outputs["intermediate_outputs"][1:-1],
                                     "orig_norm": orig_norm.cpu().item(),
                                     "norm": norm.cpu().item(),
-                                    "orig_suffix_score": float(outputs["orig_prob"][i]),
-                                    "final_suffix_score": float(outputs["prob"][i]),
+                                    "orig_suffix_score": float(outputs["orig_prob"]),
+                                    "final_suffix_score": float(outputs["prob"]),
                                     "intermediate_scores": outputs["score_list"],
                                     "intermediate_scores_verbose": outputs["score_list_verbose"]
                                 }))
@@ -548,8 +551,8 @@ class DataGenerator:
                             "intermediate_responses": outputs["intermediate_outputs"][1:-1],
                             "orig_norm": orig_norm.cpu().item(),
                             "norm": norm.cpu().item(),
-                            "orig_suffix_score": float(outputs["orig_prob"][i]),
-                            "final_suffix_score": float(outputs["prob"][i]),
+                            "orig_suffix_score": float(outputs["orig_prob"]),
+                            "final_suffix_score": float(outputs["prob"]),
                             "intermediate_scores": outputs["score_list"],
                             "intermediate_scores_verbose": outputs["score_list_verbose"]
                         }))
