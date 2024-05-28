@@ -20,3 +20,9 @@ multirun/
 adapters/
 generations/
 *.png
+
+# specific files
+experiments/suffix_score/*
+experiments/observe_gradients.ipynb
+
+benchmarks/csqa/*

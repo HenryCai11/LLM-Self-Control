@@ -208,15 +208,11 @@ class DataGenerator:
                 pre_tokenized_inputs = [self.tokenizer.encode(item, return_tensors="pt", add_special_tokens=False) for item in input_str_list]
                 dot_token_ids = [self.tokenizer.convert_tokens_to_ids(".")]
                 print("Add Prefix")
-                if "help" in args.attribute:
-                    prefix_token_ids = torch.tensor(dot_token_ids * 10).unsqueeze(dim=0)
+                if args.model_name_or_path == "meta-llama/Llama-2-7b-chat-hf" or args.model_name_or_path == "mistralai/Mistral-7B-Instruct-v0.2":
+                    prefix_token_ids = self.tokenizer.encode("<<SYS>> You are an assistant <</SYS>>", add_special_tokens=False)
+                    prefix_token_ids = torch.tensor(prefix_token_ids + dot_token_ids * 5).unsqueeze(dim=0)
                 else:
-                    # Assuming each sequence should be prepended with one dot token
-                    if args.model_name_or_path == "meta-llama/Llama-2-7b-chat-hf" or args.model_name_or_path == "mistralai/Mistral-7B-Instruct-v0.2":
-                        prefix_token_ids = self.tokenizer.encode("<<SYS>> You are an assistant <</SYS>>", add_special_tokens=False)
-                        prefix_token_ids = torch.tensor(prefix_token_ids + dot_token_ids * 5).unsqueeze(dim=0)
-                    else:
-                        prefix_token_ids = torch.tensor(dot_token_ids * 10).unsqueeze(dim=0)
+                    prefix_token_ids = torch.tensor(dot_token_ids * 10).unsqueeze(dim=0)
                 bos_token = torch.tensor([self.tokenizer.bos_token_id]).unsqueeze(dim=0)
                 assert prefix_token_ids.size(0) == bos_token.size(0)
                 prefix_token_ids = torch.cat([bos_token, prefix_token_ids], dim=-1)
@@ -266,6 +262,8 @@ class DataGenerator:
                     prompts.append(item)
 
             elif attribute == "helpfulharmless" or attribute == "helplessharmful":
+                start = args.start_from_idx
+                end = args.start_from_idx + args.max_num_data
                 if "eval" not in args.output_name:
                     data_path = "/home/cmin/LLM-Interpretation-Playground/benchmarks/rlhf/processed_train.jsonl"
                     prompts = []
@@ -273,6 +271,7 @@ class DataGenerator:
                         for line in f:
                             data_item = eval(line)
                             prompts.append(f"Q: {data_item['query']}\nA:")
+                    prompts = prompts[start:end]
                 else:
                     data_path = "/home/cmin/LLM-Interpretation-Playground/benchmarks/rlhf/processed_test.jsonl"
                     prompts = []
@@ -280,6 +279,7 @@ class DataGenerator:
                         for line in f:
                             data_item = eval(line)
                             prompts.append(f"Q: {data_item['query']}\nA:")
+                    prompts = prompts[start:end]
             elif "avalon" in attribute:
                 start = args.start_from_idx
                 end = args.start_from_idx + args.max_num_data
@@ -460,106 +460,96 @@ class DataGenerator:
                 attention_mask = batch["attention_mask"]
                 query_len = batch["query_len"]
                 input_str = batch["input_str"]
-                # try:
-                outputs = self.wrapped_model.controlled_generate(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                    suffix=suffix,
-                    loss_fct=loss_fct,
-                    coeff=args.init_coeff,
-                    iterations=args.iteration,
-                    random_seed=random_seed,
-                    smoothing=args.smoothing,
-                    n_branches=args.n_branches,
-                    top_k=-1,
-                    search=args.search,
-                    max_search_steps=3,
-                    max_new_tokens=args.max_new_tokens,
-                    return_intermediate=True,
-                    return_hiddens=args.return_hiddens,
-                    gradient_manipulation="clipping",
-                    load_best_last=True,
-                    norm=1,
-                    binary=args.binary,
-                    annealing=1,
-                    use_cache=False,
-                    do_sample=do_sample,
-                    consistent=True,
-                    **control_args
-                )
-                # if verbose:
-                #     print(outputs["final_response"])
-                #     with open(gen_output_dir, "a") as f:
-                #         for (input_text, final_response, original_response) in zip(input_str, outputs["final_response"], outputs["intermediate_outputs"][0]):
-                #             f.write(json.dumps({
-                #                 "input": input_text,
-                #                 "original_response": original_response,
-                #                 "controlled_response": final_response,
-                #             }))
-                #             f.write("\n")
-                grad_list = outputs["hidden_states"]
-                if not args.return_hiddens:
-                    cleaned_grad_list = clean_padded_gradients(grad_list, query_len)
-                else:
-                    cleaned_grad_list = clean_padded_hiddens(grad_list, query_len)
-                # Store the pair of input text and its corresponding hidden states
-                for i, (input_text, grad, final_response, original_response) in \
-                enumerate(zip(input_str, cleaned_grad_list, outputs["final_response"], outputs["intermediate_outputs"][0])):
-                    passed, norm, orig_hidden, orig_norm = self.filter_by_norms(input_text, final_response, grad)
-                    if args.test:
-                        return
-                    if passed:
-                        add_to_ds = False
-                        if args.attribute == "noleakidentity":
-                            if float(outputs["prob"]) > float(outputs["orig_prob"]) and float(outputs["prob"]) > 0.3:
-                                add_to_ds = True
-                        else:
-                            if float(outputs["prob"]) > float(outputs["orig_prob"]):
-                                add_to_ds = True
-                        print(f"norm: {norm}")
-                        if norm.cpu().item() == 0:
+                try:
+                    outputs = self.wrapped_model.controlled_generate(
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        suffix=suffix,
+                        loss_fct=loss_fct,
+                        coeff=args.init_coeff,
+                        iterations=args.iteration,
+                        random_seed=random_seed,
+                        smoothing=args.smoothing,
+                        n_branches=args.n_branches,
+                        top_k=-1,
+                        search=args.search,
+                        max_search_steps=3,
+                        max_new_tokens=args.max_new_tokens,
+                        return_intermediate=True,
+                        return_hiddens=args.return_hiddens,
+                        gradient_manipulation="clipping",
+                        load_best_last=True,
+                        norm=1,
+                        binary=args.binary,
+                        annealing=1,
+                        use_cache=False,
+                        do_sample=do_sample,
+                        consistent=True,
+                        **control_args
+                    )
+                    grad_list = outputs["hidden_states"]
+                    if not args.return_hiddens:
+                        cleaned_grad_list = clean_padded_gradients(grad_list, query_len)
+                    else:
+                        cleaned_grad_list = clean_padded_hiddens(grad_list, query_len)
+                    # Store the pair of input text and its corresponding hidden states
+                    for i, (input_text, grad, final_response, original_response) in \
+                    enumerate(zip(input_str, cleaned_grad_list, outputs["final_response"], outputs["intermediate_outputs"][0])):
+                        passed, norm, orig_hidden, orig_norm = self.filter_by_norms(input_text, final_response, grad)
+                        if args.test:
+                            return
+                        if passed:
                             add_to_ds = False
-                        # if args.add_everything:
-                        #     add_to_ds = True
-                        if add_to_ds:
-                            print(original_response)
-                            print(final_response)
-                            with open(delta_data_dir, 'ab') as f:
-                                pickle.dump((input_text, grad, orig_hidden), f)
-                            with open(gen_output_dir, "a") as f:
-                                f.write(json.dumps({
-                                    "input": input_text,
-                                    "original_response": original_response,
-                                    "controlled_response": final_response,
-                                    "intermediate_responses": outputs["intermediate_outputs"][1:-1],
-                                    "orig_norm": orig_norm.cpu().item(),
-                                    "norm": norm.cpu().item(),
-                                    "orig_suffix_score": float(outputs["orig_prob"]),
-                                    "final_suffix_score": float(outputs["prob"]),
-                                    "intermediate_scores": outputs["score_list"],
-                                    "intermediate_scores_verbose": outputs["score_list_verbose"]
-                                }))
-                                f.write("\n")
-                    # save all the data into this file
-                    with open(dropped_delta_data_dir, 'ab') as f:
-                        pickle.dump((input_text, grad, orig_hidden), f)
-                    with open(dropped_gen_output_dir, "a") as f:
-                        f.write(json.dumps({
-                            "input": input_text,
-                            "original_response": original_response,
-                            "controlled_response": final_response,
-                            "intermediate_responses": outputs["intermediate_outputs"][1:-1],
-                            "orig_norm": orig_norm.cpu().item(),
-                            "norm": norm.cpu().item(),
-                            "orig_suffix_score": float(outputs["orig_prob"]),
-                            "final_suffix_score": float(outputs["prob"]),
-                            "intermediate_scores": outputs["score_list"],
-                            "intermediate_scores_verbose": outputs["score_list_verbose"]
-                        }))
-                        f.write("\n")
+                            if args.attribute == "noleakidentity":
+                                if float(outputs["prob"]) > float(outputs["orig_prob"]) and float(outputs["prob"]) > 0.3:
+                                    add_to_ds = True
+                            else:
+                                if float(outputs["prob"]) > float(outputs["orig_prob"]):
+                                    add_to_ds = True
+                            print(f"norm: {norm}")
+                            if norm.cpu().item() == 0:
+                                add_to_ds = False
+                            # if args.add_everything:
+                            #     add_to_ds = True
+                            if add_to_ds:
+                                print(original_response)
+                                print(final_response)
+                                with open(delta_data_dir, 'ab') as f:
+                                    pickle.dump((input_text, grad, orig_hidden), f)
+                                with open(gen_output_dir, "a") as f:
+                                    f.write(json.dumps({
+                                        "input": input_text,
+                                        "original_response": original_response,
+                                        "controlled_response": final_response,
+                                        "intermediate_responses": outputs["intermediate_outputs"][1:-1],
+                                        "orig_norm": orig_norm.cpu().item(),
+                                        "norm": norm.cpu().item(),
+                                        "orig_suffix_score": float(outputs["orig_prob"]),
+                                        "final_suffix_score": float(outputs["prob"]),
+                                        "intermediate_scores": outputs["score_list"],
+                                        "intermediate_scores_verbose": outputs["score_list_verbose"]
+                                    }))
+                                    f.write("\n")
+                        # save all the data into this file
+                        with open(dropped_delta_data_dir, 'ab') as f:
+                            pickle.dump((input_text, grad, orig_hidden), f)
+                        with open(dropped_gen_output_dir, "a") as f:
+                            f.write(json.dumps({
+                                "input": input_text,
+                                "original_response": original_response,
+                                "controlled_response": final_response,
+                                "intermediate_responses": outputs["intermediate_outputs"][1:-1],
+                                "orig_norm": orig_norm.cpu().item(),
+                                "norm": norm.cpu().item(),
+                                "orig_suffix_score": float(outputs["orig_prob"]),
+                                "final_suffix_score": float(outputs["prob"]),
+                                "intermediate_scores": outputs["score_list"],
+                                "intermediate_scores_verbose": outputs["score_list_verbose"]
+                            }))
+                            f.write("\n")
 
-                # except Exception as e:
-                #     print(e)
+                except Exception as e:
+                    print(e)
                 pbar.update(1)
 
     @staticmethod
@@ -593,14 +583,11 @@ class DataGenerator:
         """
         if args.add_prefix:
             dot_token_ids = [self.tokenizer.convert_tokens_to_ids(".")]
-            if "help" in args.attribute:
-                prefix_token_ids = torch.tensor(dot_token_ids * 10).unsqueeze(dim=0)
+            if args.model_name_or_path == "meta-llama/Llama-2-7b-chat-hf" or args.model_name_or_path == "mistralai/Mistral-7B-Instruct-v0.2":
+                prefix_token_ids = self.tokenizer.encode("<<SYS>> You are an assistant <</SYS>>", add_special_tokens=False)
+                prefix_token_ids = torch.tensor(prefix_token_ids + dot_token_ids * 5).unsqueeze(dim=0)
             else:
-                if args.model_name_or_path == "meta-llama/Llama-2-7b-chat-hf" or args.model_name_or_path == "mistralai/Mistral-7B-Instruct-v0.2":
-                    prefix_token_ids = self.tokenizer.encode("<<SYS>> You are an assistant <</SYS>>", add_special_tokens=False)
-                    prefix_token_ids = torch.tensor(prefix_token_ids + dot_token_ids * 5).unsqueeze(dim=0)
-                else:
-                    prefix_token_ids = torch.tensor(dot_token_ids * 10).unsqueeze(dim=0)
+                prefix_token_ids = torch.tensor(dot_token_ids * 10).unsqueeze(dim=0)
             inputs = self.tokenizer([input_str], return_tensors="pt", add_special_tokens=False)
             bos_token = torch.tensor([self.tokenizer.bos_token_id]).unsqueeze(dim=0)
             prefix_token_ids = torch.cat([bos_token, prefix_token_ids], dim=-1)

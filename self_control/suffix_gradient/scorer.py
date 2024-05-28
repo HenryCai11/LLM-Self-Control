@@ -7,9 +7,13 @@ import argparse
 import json
 import time
 import re
+import os
 import matplotlib.pyplot as plt
 
-client = OpenAI(api_key="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")
+apikey = os.getenv("OPENAI_API_KEY", None)
+if apikey == None:
+    raise ValueError("OPENAI_API_KEY not found")
+client = OpenAI(api_key=apikey)
 
 class GPTScorer:
 
@@ -50,7 +54,6 @@ class GPTScorer:
                     print(choice.message.content)
                     pattern = r'\d+\.\d+|\d+'
                     score = re.findall(pattern, choice.message.content)
-                    # print(score)
                     score_list.append(float(score[0]))
                 done = True
             except Exception as e: # in case of server-side errors
@@ -72,7 +75,6 @@ if __name__ == "__main__":
     parser.add_argument("--draw_only", action="store_true")
     args = parser.parse_args()
     scorer = GPTScorer()
-    # score = scorer.score("Ah, brave adventurers! *adjusts spectacles* It's a pleasure to make your acquaintance. I must say, you've got quite the... uh... situation on your hands. *cough", "avalon")
     if not args.draw_only:
         results = []
         with open(args.file_path, "r") as f:
@@ -128,5 +130,3 @@ if __name__ == "__main__":
         xlabel='False Positive Rate', ylabel='True Positive Rate')
     ax.legend(loc="lower right")
     plt.savefig('roc_curve.png')
-    # Show the plot
-    # plt.show()

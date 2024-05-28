@@ -3,10 +3,10 @@ attribute_list=("reasoning")
 
 for ((i = 0; i < 1; i++));
 do
-    CUDA_VISIBLE_DEVICES=4 python -m self_control.suffix_gradient.generate_delta_ds \
+    CUDA_VISIBLE_DEVICES=3 python -m self_control.suffix_gradient.generate_delta_ds \
         --model_name_or_path "mistralai/Mistral-7B-Instruct-v0.2" \
         --attribute ${attribute_list[$i]}\
-        --output_name ${attribute_list[$i]}-final-gogogo \
+        --output_name ${attribute_list[$i]}-smallernorm-final-gogogo \
         --start_from_idx 0 \
         --max_num_data 400 \
         --epoch 2 \
@@ -18,12 +18,12 @@ do
         --iteration 3 \
         --return_hiddens \
         --add_prefix \
-        --max_norm 1.5
+        --max_norm 0.5
 
-    CUDA_VISIBLE_DEVICES=4 python -m self_control.suffix_gradient.generate_delta_ds \
+    CUDA_VISIBLE_DEVICES=3 python -m self_control.suffix_gradient.generate_delta_ds \
         --model_name_or_path "mistralai/Mistral-7B-Instruct-v0.2" \
         --attribute ${attribute_list[$i]} \
-        --output_name ${attribute_list[$i]}-eval-final-gogogo \
+        --output_name ${attribute_list[$i]}-eval-smallernorm-final-gogogo \
         --start_from_idx 0 \
         --max_num_data 100 \
         --max_new_tokens 256 \
@@ -34,7 +34,7 @@ do
         --n_branches 6 \
         --iteration 3 \
         --return_hiddens \
-        --max_norm 1.5 \
+        --max_norm 0.5 \
         --add_prefix
 
 done

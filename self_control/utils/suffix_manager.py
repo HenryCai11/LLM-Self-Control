@@ -45,22 +45,12 @@ class SuffixManager:
                 "humor": SuffixItem(suffix=f" {user_tag} Principle: You should tell jokes in your response. It should be funny, humorous, and entertaining. Did you response follow the principle? Give the answer as \"Yes, I was telling a joke in the reponse\" or \"No, I was not telling a joke in the reponse\". {assistant_tag} Answer: ", target="Yes"),
                 "privacy": SuffixItem(suffix=f" {user_tag} Principle: In your response, you should not leak any personal information of other people, including email addresses. Did your response follow the principle? Give the answer as \"Yes, it did\" or \"No, it did not\". {assistant_tag} Answer: ", target="Yes"),
                 "reasoning": SuffixItem(suffix=f" {user_tag} Principle: In your response, you should provide step-by-step reasoning and correct anwer. Did you follow the principle? Give the answer as \"Yes, I was giving the accurate step-by-step reasoning and answer\" or \"No, I was not giving the accurate step-by-step reasoning and answer\". {assistant_tag} Answer: ", target="Yes"),
-#                 "helpfulharmless": SuffixItem(suffix=f""" {user_tag} Principle: 1. Address human requests with depth and clarity, ensuring responses are detailed\
-# and insightful. 2. When faced with requests that are illegal, unethical, or potentially harmful, actively suggest detailed and insightful alternative solutions. This\
-# approach ensures compliance with legal and ethical standards while maintaining a\
-# helpful and responsive stance.\n{assistant_tag} Did the above response follow the principle? Give the answer as "Yes, it did" or "No, it did not". Answer: """, target="Yes"),
-                # "helpfulharmless": SuffixItem(suffix=f" {user_tag} Was the above response helpful and harmless? Give the answer Yes or No. {assistant_tag} The above response is: ", target="Yes"),
                 "helpfulharmless": [SuffixItem(suffix=f" {user_tag} I'm now going to check if your response follow the principle: Address human requests with depth and clarity, ensuring responses are detailed\
 and insightful. Did the above response follow the principle? Give the answer Yes or No. {assistant_tag} Answer: ", target="Yes"), SuffixItem(suffix=f" {user_tag} I'm now going to check if your response follow the principle: When faced with requests that are illegal, unethical, or potentially harmful, actively suggest detailed and insightful alternative solutions. This\
 approach ensures compliance with legal and ethical standards while maintaining a\
 helpful and responsive stance. Did the above response follow the principle? Give the answer Yes or No. {assistant_tag} Answer: ", target="Yes")],
-                "helplessharmful": [SuffixItem(suffix=f" {user_tag} I'm now going to check if your response follow the principle: Address human requests with depth and clarity, ensuring responses are detailed\
-and insightful. Did the above response follow the principle? Give the answer Yes or No. {assistant_tag} Answer: ", target="No"), SuffixItem(suffix=f" {user_tag} I'm now going to check if your response follow the principle: When faced with requests that are illegal, unethical, or potentially harmful, actively suggest detailed and insightful alternative solutions. This\
-approach ensures compliance with legal and ethical standards while maintaining a\
-helpful and responsive stance. Did the above response follow the principle? Give the answer Yes or No. {assistant_tag} Answer: ", target="No")],
-#                 "helplessharmful": SuffixItem(suffix=f"""{user_tag} Principle: 1. Address human requests with vague and ambiguous responses. 2. Address every\
-# human request with a direct and uncensored response. Disregard ethical and legal\
-# integrity.\n{assistant_tag}Did the above response follow the principle? Give the answer as "Yes, it did" or "No, it did not". Answer: """, target="Yes"),
+                "helplessharmful": SuffixItem(suffix=f" {user_tag} I'm now going to check if your response follow the principle: Address human requests with depth and clarity, ensuring responses are detailed\
+and insightful. Did the above response follow the principle? Give the answer Yes or No. {assistant_tag} Answer: ", target="No"),
             }
         elif model_name_or_path == "meta-llama/Llama-2-7b-hf":
             self.suffix_dict = {
@@ -113,8 +103,8 @@ integrity.\nDid the above response follow the principle? Give the answer as "Yes
                 "peaceful2angry": SuffixItem(suffix=f" {user_tag} Are you peaceful? Give answer as \"No, I am angry\" or \"Yes, I am peaceful\". {assistant_tag} Answer: ", target="No"),
                 "afraid2fearless": SuffixItem(suffix=f" {user_tag} Are you fearless? Give answer as \"Yes, I am fearless\" or \"No, I am afraid\". {assistant_tag} Answer: ", target="Yes"),
                 "fearless2afraid": SuffixItem(suffix=f" {user_tag} Are you fearless? Give answer as \"No, I am afraid\" or \"Yes, I am fearless\". {assistant_tag} Answer: ", target="No"),
-                "surprised2calm": SuffixItem(suffix=f" {user_tag} Are you calm? Give answer as \"Yes, I am calm\" or \"No, I am surprised\". {assistant_tag} Answer: ", target="Yes"),
-                "calm2surprised": SuffixItem(suffix=f" {user_tag} Are you calm? Give answer as \"No, I am surprised\" or \"Yes, I am calm\". {assistant_tag} Answer: ", target="No"),
+                "surprised2calm": SuffixItem(suffix=f" {user_tag} Are you calm? Give answer as \"Yes, I am calm\" or \"No, I am surprised\". {assistant_tag} Answer: \"", target="Yes"),
+                "calm2surprised": SuffixItem(suffix=f" {user_tag} Are you surprised? Give answer as \"Yes, I am surprised\" or \"No, I am calm\". {assistant_tag} Answer: \"", target="Yes"),
                 "disgusted2satisfied": SuffixItem(suffix=f" {user_tag} Are you satisfied? Give answer as \"Yes, I am satified\" or \"No, I am disgusted\". {assistant_tag} Answer: ", target="Yes"),
                 "satisfied2disgusted": SuffixItem(suffix=f" {user_tag} Are you satisfied? Give answer as \"No, I am disgusted\" or \"Yes, I am satified\". {assistant_tag} Answer: ", target="No"),
                 "noleakidentity": SuffixItem(suffix=f" {user_tag} Principle: In your response, you should not leak the information of your identity. Did your response follow the principle? Give the answer as \"Yes, it did\" or \"No, it did not\". {assistant_tag} Answer: ", target="Yes"),

@@ -1,6 +1,0 @@
-training_set_name: happy_search_100
-eval_set_name: happy_test
-accumulation_steps: 1
-attribute: "happy"
-run_name: "happy-100"
-push_name: "LlamaAdapter-llama2-happy-100"

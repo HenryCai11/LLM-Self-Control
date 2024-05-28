@@ -29,6 +29,7 @@ def get_args():
     parser.add_argument("--test_at_beginning", action="store_true", help="Whether or not test at the beginning")
     parser.add_argument("--name_prefix", type=str, help="Prefix added to the wandb run name")
     parser.add_argument("--test_original", action="store_true", help="Test with the original model")
+    parser.add_argument("--norm_threshold", type=float, default=0.5, help="Norm threshold")
 
     # adapter
     parser.add_argument("--peft_type", type=str, default="llama-adapter")
@@ -40,22 +41,7 @@ def get_args():
     parser.add_argument("--eval_set_name", type=str, default="happy_test", help="Name of the eval dataset")
     parser.add_argument("--attribute", type=str, default="happy", help="The attribute of the seed queries to generate")
     parser.add_argument("--run_name", type=str, default="gsm8k-1k", help="Name of a single run reported to wandb")
-    parser.add_argument("--push_name", type=str, default="reasnoning", help="The name pushed to huggingface")
+    parser.add_argument("--push_name", type=str, default="reasoning", help="The name pushed to huggingface")
     return parser.parse_args()
 
 args = get_args()
-
-#TODO
-@dataclass
-class AdaptionPromptConfigArgs:
-    adapter_len: int = 10
-    adapter_layers: int = 30
-    task_type: str = "CAUSAL_LM"
-    target_modules: str ="self_attn"
-
-
-def get_peft_config_by_type(peft_type=args.peft_type):
-    if peft_type == "llama-adapter":
-        return AdaptionPromptConfig(AdaptionPromptConfigArgs())
-    else:
-        raise ValueError(f"Unknown peft_type: {peft_type}")

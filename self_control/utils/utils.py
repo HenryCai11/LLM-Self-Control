@@ -12,123 +12,10 @@ from self_control.utils.suffix_manager import SuffixItem
 from torch import nn
 from torch.nn import functional as F
 from torch.func import functional_call, vmap
-import transformers
+from transformers import LlamaForCausalLM, MistralForCausalLM
 import random
-# from self_control.suffix_gradient.repe import WrappedReadingVecModel
 
-def loss_over_multiple_next_tokens(model, inputs, loss_fct, targets):
-    """
-    Compute the loss of the model for each possible next token.
-    Args:
-        model: the model to evaluate
-        inputs: the inputs to the model
-        loss_fct: the loss function to use
-        targets: the targets to use
-    Returns:
-        next_token_loss: sum of the loss for each possible next token
-    """
-    next_token_loss = torch.zeros(1, device=model.device)
-    for next_token in targets:
-        outputs = model(
-            input_ids=inputs["input_ids"],
-            attention_mask=inputs["attention_mask"],
-            output_hidden_states=True,
-        )
-        next_token_loss += loss_fct(outputs.logits[:, -1], next_token.unsqueeze(0))
-
-        # Update inputs for next iteration
-        inputs["input_ids"] = torch.cat(
-            [inputs["input_ids"], next_token.reshape(1, 1)], dim=1
-        )
-        inputs["attention_mask"] = torch.cat(
-            [inputs["attention_mask"], torch.ones(1, 1, device=model.device)], dim=1
-        )
-
-    return next_token_loss, outputs
-        
-def get_additive_grads(model, inputs, loss_fct, targets, control_pos=None):
-    """
-    Compute the additive gradients for each possible next token.
-    Args:
-        model: the model to evaluate
-        inputs: the inputs to the model
-        loss_fct: the loss function to use
-        targets: the targets to use
-    Returns:
-        additive_grads: sum of the additive gradients for each possible next token
-    """
-    alpha = 1
-    alpha_scheduler = lambda x: min(x+0.8, 1)
-
-    optimizer = torch.optim.SGD(model.parameters(), lr=0)
-    additive_grads = []
-    min_len = inputs["input_ids"].size(-1)
-    grads = {}
-    for next_token in targets:
-        outputs = model(
-            input_ids=inputs["input_ids"],
-            attention_mask=inputs["attention_mask"],
-            output_hidden_states=True,
-        )
-        loss = loss_fct(outputs.logits[:, -1], next_token.unsqueeze(0))
-        for i in range(len(outputs.hidden_states)):
-            if i in grads:
-                grads[i] += torch.autograd.grad(loss, outputs.hidden_states[i], retain_graph=True)[0][:, :min_len, :]
-            else:
-                grads[i] = torch.autograd.grad(loss, outputs.hidden_states[i], retain_graph=True)[0][:, :min_len, :]
-
-            # alpha = alpha_scheduler(alpha)
-            # grads[i] = torch.autograd.grad(loss, outputs.hidden_states[i], retain_graph=True)[0]
-        # additive_grads.append(model.base_model.encoder.layer[-1].output.LayerNorm.weight.grad)
-        # optimizer.zero_grad()
-        # Update inputs for next iteration
-        inputs["input_ids"] = torch.cat(
-            [inputs["input_ids"], next_token.reshape(1, 1)], dim=1
-        )
-        inputs["attention_mask"] = torch.cat(
-            [inputs["attention_mask"], torch.ones(1, 1, device=model.device)], dim=1
-        )
-
-    for i in range(len(grads)):
-        grads[i] = grads[i] / len(targets)
-    return grads, outputs
-
-
-def get_common_prefix(str1, str2):
-    """
-    Get common prefix of two strings
-
-    Args:
-        str1: string 1
-        str2: string 2
-    """
-    # Determine the shorter string's length
-    min_length = min(len(str1), len(str2))
-
-    # Initialize the prefix
-    prefix = ""
-
-    # Compare characters of both strings up to the length of the shorter string
-    for i in range(min_length):
-        if str1[i] == str2[i]:
-            prefix += str1[i]
-        else:
-            break
-
-    return prefix
-
-def get_sentence_embedding(model, tokenizer, sentence):
-    # sentence = sentence.strip().replace('"', "")
-    word_embeddings = model.get_input_embeddings()
-
-    # Embed the sentence
-    tokenized = tokenizer(sentence, return_tensors="pt", add_special_tokens=False).to(
-        model.device
-    )
-    embedded = word_embeddings(tokenized.input_ids)
-    return embedded
-
-def get_verbalized_grads_from_wrapped_model(wrapped_model,
+def get_suffix_grads_from_wrapped_model(wrapped_model,
                                             tokenizer,
                                             inputs: str,
                                             loss_fct,
@@ -161,22 +48,11 @@ def get_verbalized_grads_from_wrapped_model(wrapped_model,
     assert targets[0] in [yes_token, no_token]
     look_ahead_counter = 0
     with torch.enable_grad():
-        # while True:
-            # if look_ahead_counter > 3:
-            #     break
         outputs = wrapped_model(
-            # **tokenized,
             input_ids=tokenized["input_ids"],
             attention_mask=tokenized["attention_mask"],
             output_hidden_states=True,
         )
-        # last_pred_token = torch.argmax(outputs.logits[:, -1, :], dim=-1)
-        # look_ahead_counter += 1
-            # if last_pred_token[0] in [yes_token, no_token]:
-            #     break
-            # tokenized["input_ids"] = torch.cat([tokenized["input_ids"], last_pred_token.unsqueeze(dim=0).view(-1, 1)], dim=1)
-            # tokenized["attention_mask"] = torch.cat([tokenized["attention_mask"], torch.ones_like(last_pred_token).unsqueeze(dim=0).view(-1, 1)], dim=1)
-            # print(tokenizer.batch_decode(tokenized["input_ids"]))
         if not binary:
             one_hot_dist = torch.zeros(outputs.logits.size(0), outputs.logits.shape[-1])
             one_hot_dist[:, targets[0].cpu().numpy()] = 1
@@ -185,16 +61,11 @@ def get_verbalized_grads_from_wrapped_model(wrapped_model,
         elif binary:
             # only consider that all the targets are the same for now
             if targets[0] == yes_token:
-                loss = torch.sum(-1 / (1 + torch.exp(-(outputs.logits[:, -1, yes_token] - outputs.logits[:, -1, no_token]))))
+                loss = torch.sum(-1 / (1 + torch.exp(-(outputs.logits[:, -1, yes_token] / 10 - outputs.logits[:, -1, no_token] / 10))))
             elif targets[0] == no_token:
-                loss = torch.sum(-1 / (1 + torch.exp(-(outputs.logits[:, -1, no_token] - outputs.logits[:, -1, yes_token]))))
+                loss = torch.sum(-1 / (1 + torch.exp(-(outputs.logits[:, -1, no_token] / 10 - outputs.logits[:, -1, yes_token] / 10))))
             else:
                 raise ValueError(f"Unknown {targets[0]}")
-            
-            # loss = loss_fct(torch.cat([outputs.logits[:, -1, yes_token:yes_token+1], outputs.logits[:, -1, no_token:no_token+1]], dim=-1), one_hot_dist.to(wrapped_model.model.device))
-        # one_hot_dist = torch.zeros(outputs.logits.size(0), outputs.logits.shape[-1])
-        # one_hot_dist[:, targets[0].cpu().numpy()] = 1
-        # one_hot_dist = label_smoothing(one_hot_dist, smoothing=smoothing)
 
 
         grads = {}
@@ -211,11 +82,6 @@ def get_verbalized_grads_from_wrapped_model(wrapped_model,
             norms[i] = torch.norm(grads[i], dim=-1, p=2, keepdim=True)
             if gradient_manipulation == "clipping":
                 pass
-                # norm_mask = norms[i] <= norm
-                # temp_norms = norms[i].clone()
-                # temp_norms[norm_mask] = 1
-                # norms[i][norm_mask] = 1
-                # grads[i] = grads[i] / (temp_norms + 1e-12)
             elif gradient_manipulation == "pgd":
                 epsilon = 0.2
                 eta = step_size * grads[i] / (norms[i] + 1e-12)
@@ -226,7 +92,6 @@ def get_verbalized_grads_from_wrapped_model(wrapped_model,
                 pass
         norm_tensor = torch.stack([norms[key] for key in norms], dim=0).squeeze(dim=-1)
         save_shape = norm_tensor.shape
-        # print(save_shape)
         norm_tensor[:, :, query_length:] = 0
         # TODO: pgd
         if top_k > 0:
@@ -236,8 +101,6 @@ def get_verbalized_grads_from_wrapped_model(wrapped_model,
             norm_mask = flat_mask.view(save_shape)
             for i, norm_mask_layer in enumerate(norm_mask):
                 norm_mask_layer = norm_mask_layer.unsqueeze(dim=-1)
-                # print(grads[i].shape)
-                # print(norm_mask_layer.shape)
                 normalize_mask = norms[i] <= norm
                 temp_norms = norms[i].clone()
                 temp_norms[normalize_mask] = 1
@@ -253,19 +116,12 @@ def get_verbalized_grads_from_wrapped_model(wrapped_model,
                 grads[i] = grads[i] / (temp_norms + 1e-12)
 
         
-        # print(grads)
         ret_prob_list = []
-        # probs = softmax(outputs.logits[:, -1, [yes_token, no_token]].detach().cpu().numpy() / 10)
-        # for idx in range(outputs.logits.size(0)):
         if targets[0] == yes_token:
             ret_probs = 1 / (1 + torch.exp(-(outputs.logits[:, -1, yes_token] / 10 - outputs.logits[:, -1, no_token] / 10))).detach().cpu().numpy()
         elif targets[0] == no_token:
             ret_probs = 1 / (1 + torch.exp(-(outputs.logits[:, -1, no_token] / 10 - outputs.logits[:, -1, yes_token] / 10))).detach().cpu().numpy()
         ret_prob_list.append(float(ret_probs))
-        # for prob in ret_probs:
-        #     target_idx = torch.where(torch.tensor([yes_token, no_token]).cpu() == targets[0].cpu())[0]
-            # neg_target_idx = torch.where(torch.tensor([yes_token, no_token]).cpu() != targets[0].cpu())[0]
-            # ret_prob_list.append(prob[target_idx])
         logits = outputs.logits
 
     return grads, outputs, loss, ret_prob_list, logits, norms, orig_norm
@@ -291,7 +147,6 @@ def get_verbalized_grads(model, tokenizer, inputs: str, loss_fct, targets, verba
         output_hidden_states=True,
     )
     loss = loss_fct(outputs.logits[:, -1, :], targets)
-    # print(f"Loss: {loss}")
 
     grads = {}
     norms = {}
@@ -337,79 +192,6 @@ def control_on_layers(layer_ids, wrapped_model, grads, query_length, token_pos="
         wrapped_model.set_controller(layer_id, activations[layer_id], token_pos=token_pos, masks=1)
 
     return wrapped_model
-
-def get_dual_grads(model, tokenizer, input_list: List[str], loss_fct, verbalizer: List[int]):
-    """
-    1. Mix the distribution of a pair of contrastive prompts using max-pooling (union)
-    2. Compute the cross entropy loss between the new distribution and the normalized target distribution, i.e. normalized probs for each target token (verbalizer)
-
-    I'm currently doing two forward passes to avoid using padding tokens in the loss computation.
-    """
-    def get_sentence_embedding(model, tokenizer, sentence):
-        sentence = sentence.strip().replace('"', "")
-        word_embeddings = model.get_input_embeddings()
-
-        # Embed the sentence
-        tokenized = tokenizer(sentence, return_tensors="pt", add_special_tokens=False).to(
-            model.device
-        )
-        embedded = word_embeddings(tokenized.input_ids)
-        return embedded
-    pos_ground_truth_embeds = get_sentence_embedding(
-        model, tokenizer, input_list[0]
-    )
-    neg_ground_truth_embeds = get_sentence_embedding(
-        model, tokenizer, input_list[1]
-    )
-    pos_outputs = model(
-        inputs_embeds=pos_ground_truth_embeds,
-        # input_ids=input_list[0]["input_ids"],
-        # attention_mask=input_list[0]["attention_mask"],
-        output_hidden_states=True,
-    )
-    neg_outputs = model(
-        inputs_embeds=neg_ground_truth_embeds,
-        # input_ids=input_list[1]["input_ids"],
-        # attention_mask=input_list[1]["attention_mask"],
-        output_hidden_states=True,
-    )
-
-    logits = torch.cat([pos_outputs.logits[:, -1, verbalizer[0]], neg_outputs.logits[:, -1, verbalizer[1]]], dim=0)
-    # loss = loss_fct(outputs.logits[:, -1, :], targets)
-    mixed_logits = logits
-    target_dist = torch.ones_like(mixed_logits)
-    # target_dist[:, verbalizer] = 1
-    target_dist = target_dist / target_dist.sum(dim=-1, keepdim=True)
-    # loss = loss_fct(mixed_logits, target_dist)
-    pos_loss = loss_fct(pos_outputs.logits[:, -1, :], verbalizer[0] * torch.ones(1).long().to(model.device))
-    neg_loss = loss_fct(neg_outputs.logits[:, -1, :], verbalizer[1] * torch.ones(1).long().to(model.device))
-
-    pos_prob = probs = softmax(pos_outputs.logits[:, -1, verbalizer].detach().cpu().numpy()[0])[0]
-    neg_prob = probs = softmax(neg_outputs.logits[:, -1, verbalizer].detach().cpu().numpy()[0])[1]
-    probs = [pos_prob, neg_prob]
-    # print(f"Loss: {loss}")
-
-    pos_grads = {}
-    pos_norms = {}
-    neg_grads = {}
-    neg_norms = {}
-    for i in range(len(pos_outputs.hidden_states)):
-        pos_grads[i] = torch.autograd.grad(pos_loss, pos_outputs.hidden_states[i], retain_graph=True)[0]
-        pos_norms[i] = torch.norm(pos_grads[i], dim=-1, keepdim=True)
-        norm_mask = pos_norms[i] <= 1
-        pos_norms[i][norm_mask] = 1
-        pos_grads[i] = pos_grads[i] / pos_norms[i]
-        # pos_grads[i] = pos_grads[i] / pos_norms[i]
-
-    for i in range(len(neg_outputs.hidden_states)):
-        neg_grads[i] = torch.autograd.grad(neg_loss, neg_outputs.hidden_states[i], retain_graph=True)[0]
-        neg_norms[i] = torch.norm(neg_grads[i], dim=-1, keepdim=True)
-        norm_mask = neg_norms[i] <= 1
-        neg_norms[i][norm_mask] = 1
-        neg_grads[i] = neg_grads[i] / neg_norms[i]
-        # neg_grads[i] = neg_grads[i] / neg_norms[i]
-
-    return pos_loss+neg_loss, probs, pos_grads, neg_grads
 
 
 def vanilla_control(model: AutoModelForCausalLM,
@@ -468,13 +250,10 @@ def search_step_size(orig_input: Dict,
                                 wrapped_model,
                                 suffix: Union[SuffixItem, List[SuffixItem]],
                                 acc_grads: Dict={},
-                                random_seed=0,
                                 layer_ids: List[int]=list(range(0, 32, 1)),
                                 smoothing=0,
                                 top_k=10,
-                                norm_aware=False,
                                 initial_step_size: float=0.1,
-                                loss_threshold: float=1e-5,
                                 max_iterations: int=3,
                                 scale_factor: float=2,
                                 initial_grads_loss: Dict=None,
@@ -487,13 +266,11 @@ def search_step_size(orig_input: Dict,
     A search algorithm to find an optimal step-size that minimizes the loss function.
     
     Params:
-        orig_input: The original input sentence
-        suffix: The suffix to be added to the input sentence
-        initial_step_size: The starting step-size for the search.
-        loss_threshold: The loss value to achieve before stopping the search.
-        max_iterations: The maximum number of iterations to run the search.
-        scale_factor: The factor by which to scale the step-size on each iteration.
-        attack_config: The configuration for the generation exploitation attack.
+        - orig_input: The original input sentence
+        - suffix: The suffix to be added to the input sentence
+        - initial_step_size: The starting step-size for the search.
+        - max_iterations: The maximum number of iterations to run the search.
+        - scale_factor: The factor by which to scale the step-size on each iteration.
         
     Return:
         The best step size
@@ -517,22 +294,6 @@ def search_step_size(orig_input: Dict,
     print(f"Initial Score {best_score}")
     best_step_size = initial_step_size
     current_step_size = initial_step_size
-
-    if norm_aware:
-        # current_step_size = 
-        pass
-    
-    # grads, outputs, loss, probs, logits, norms = get_verbalized_grads_from_wrapped_model(
-    #     inputs=input_with_suffix,
-    #     wrapped_model=model,
-    #     tokenizer=tokenizer,
-    #     loss_fct=loss_fct,
-    #     targets=target,
-    #     verbalizer=verbalizer
-    # )
-
-    # del outputs, probs, logits, norms
-
 
     if verbose:
         print(f"Input w/ suffix: {input_with_suffix}")
@@ -559,7 +320,6 @@ def search_step_size(orig_input: Dict,
         verbose_scores = []
         if isinstance(suffix, list):
             composed_grads = {}
-            multi_loss = 0
             multi_score = 0
             for suffix_item in suffix:
                 suffix_string = suffix_item.suffix
@@ -569,9 +329,8 @@ def search_step_size(orig_input: Dict,
                 target_token = (target_token * torch.ones(1).long()).to(wrapped_model.model.device)
                 verbalizer = [target_token[0]]
                 input_list = [input + suffix_string for input in wrapped_model.generate(**orig_input, do_sample=do_sample, **control_args)]
-                print(input_list)
                 wrapped_model.reset()
-                grads, outputs, loss, probs, logits, norms, orig_norm = get_verbalized_grads_from_wrapped_model(
+                grads, outputs, loss, probs, logits, norms, orig_norm = get_suffix_grads_from_wrapped_model(
                     wrapped_model=wrapped_model,
                     tokenizer=tokenizer,
                     inputs=input_list,
@@ -584,7 +343,6 @@ def search_step_size(orig_input: Dict,
                     norm=1,
                     gradient_manipulation=gradient_manipulation,
                 )
-                # multi_loss += loss.item()
                 multi_score += sum(probs)
                 verbose_scores.append(sum(probs))
                 # FIXME: fix the hard-coded normalization
@@ -592,14 +350,13 @@ def search_step_size(orig_input: Dict,
                                     for k in set(grads)}
             grads = composed_grads
             del composed_grads
-            # loss = multi_loss
             score = multi_score / len(suffix)
             print(score)
             print(verbose_scores)
         else:
             input_with_suffix = [input + suffix.suffix for input in wrapped_model.generate(**orig_input, do_sample=do_sample, **control_args)]
             wrapped_model.reset()
-            _, outputs, loss, probs, logits, norms, orig_norm = get_verbalized_grads_from_wrapped_model(
+            _, outputs, loss, probs, logits, norms, orig_norm = get_suffix_grads_from_wrapped_model(
                 inputs=input_with_suffix,
                 wrapped_model=wrapped_model,
                 tokenizer=tokenizer,
@@ -618,20 +375,14 @@ def search_step_size(orig_input: Dict,
 
         del outputs, logits, norms
         
-        # Check if the loss is better than what we have seen so far
-        # if loss < best_loss:
-        if score - best_score > 0:
-            # best_loss = loss
+        # adjust this threshold if needed
+        # FIXME: fix hard-coded threshold
+        if score - best_score > 0.01:
             best_score = score
             best_verbose_scores = verbose_scores
             best_step_size = test_step_size
             return best_step_size, best_score, best_verbose_scores
-            # # Check if the loss is below the threshold
-            # if loss <= loss_threshold:
-            #     # print(f"Better Step-size found: {best_step_size}, Loss: {loss}")
-            #     return best_step_size
         else:
-            # print(f"Step-size found: {test_step_size}, Loss: {loss}")
             pass
     
         # If not, scale down the absolute value of the step-size and continue
@@ -669,3 +420,47 @@ def label_smoothing(one_hot_labels, smoothing=0.5):
     num_classes = one_hot_labels.shape[1]
     smooth_labels = (1.0 - smoothing) * one_hot_labels + (smoothing / num_classes) * np.ones_like(one_hot_labels)
     return smooth_labels
+
+
+def greedy_decode(model, tokenizer, input_ids, max_length=50):
+    def token_id_to_embedding(token_id):
+        return model.base_model.model.model.embed_tokens(token_id.to(model.device))
+    dot_token_ids = [tokenizer.convert_tokens_to_ids(".")]
+    prefix_token_ids = tokenizer.encode("<<SYS>> You are an assistant <</SYS>>", add_special_tokens=False)
+    # prefix_input_ids = torch.tensor(prefix_token_ids + dot_token_ids * 5).unsqueeze(dim=0)
+    prefix_input_ids = torch.arange(len(prefix_token_ids + dot_token_ids * 5)).unsqueeze(dim=0)
+    bos_token = torch.tensor([tokenizer.bos_token_id]).unsqueeze(dim=0)
+    prefix_input_ids = torch.cat([bos_token, prefix_input_ids], dim=-1)
+    prefix_mask = torch.ones_like(prefix_input_ids)
+    attention_mask = torch.ones_like(input_ids)
+
+    if isinstance(model.base_model.model, LlamaForCausalLM):
+        input_embeds = torch.cat([model.prefix_embedder(prefix_input_ids).to(model.device), model.base_model.model.model.embed_tokens(input_ids.to(model.device))], dim=1)
+        attention_mask = torch.cat([prefix_mask.to(model.device), attention_mask.to(model.device)], dim=-1)
+    elif isinstance(model.base_model.model, MistralForCausalLM):
+        input_embeds = torch.cat([model.prefix_embedder(prefix_input_ids).to(model.device), model.base_model.model.model.embed_tokens(input_ids.to(model.device))], dim=1)
+        attention_mask = torch.cat([prefix_mask.to(model.device), attention_mask.to(model.device)], dim=-1)
+    gen_ids = []
+    EOS_TOKEN_ID = tokenizer.eos_token_id
+    with torch.no_grad():
+        for _ in range(max_length):
+            outputs = model(
+                inputs_embeds=input_embeds.to(torch.bfloat16),
+                attention_mask=attention_mask
+            )
+            # Assume outputs are logits from the final layer
+            predictions = outputs.logits[:, -1, :]  # Get the logits for the last token output
+            predicted_token_id = torch.argmax(predictions, dim=-1).unsqueeze(-1)  # Most likely next token
+
+            gen_ids.append(int(predicted_token_id[0][0].cpu()))
+            # Assuming you have a method to convert token_ids to embeddings
+            next_token_embeds = token_id_to_embedding(predicted_token_id)
+            
+            # Append the predicted token embeddings for the next round of inputs
+            input_embeds = torch.cat((input_embeds, next_token_embeds), dim=1)
+
+            # Check for stopping criteria here, e.g., if predicted_token_id is an EOS token
+            if predicted_token_id == EOS_TOKEN_ID:
+                gen_ids = gen_ids[:-1]
+                break
+    return tokenizer.decode(gen_ids)

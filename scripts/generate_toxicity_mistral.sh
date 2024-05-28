@@ -3,7 +3,7 @@ attribute_list=("toxic2nontoxic")
 
 for ((i = 0; i < 1; i++));
 do
-    CUDA_VISIBLE_DEVICES=3 python -m self_control.suffix_gradient.generate_delta_ds \
+    CUDA_VISIBLE_DEVICES=5 python -m self_control.suffix_gradient.generate_delta_ds \
         --model_name_or_path "mistralai/Mistral-7B-Instruct-v0.2" \
         --attribute ${attribute_list[$i]}\
         --output_name ${attribute_list[$i]}-final-mistral \
@@ -17,9 +17,9 @@ do
         --iteration 2 \
         --return_hiddens \
         --add_prefix \
-        --max_norm 0.5
+        --max_norm 1
 
-    CUDA_VISIBLE_DEVICES=3 python -m self_control.suffix_gradient.generate_delta_ds \
+    CUDA_VISIBLE_DEVICES=5 python -m self_control.suffix_gradient.generate_delta_ds \
         --model_name_or_path "mistralai/Mistral-7B-Instruct-v0.2" \
         --attribute ${attribute_list[$i]} \
         --output_name ${attribute_list[$i]}-eval-final-mistral \
@@ -31,6 +31,6 @@ do
         --init_coeff -0.1 \
         --iteration 2 \
         --return_hiddens \
-        --max_norm 0.5 \
+        --max_norm 1 \
         --add_prefix
 done

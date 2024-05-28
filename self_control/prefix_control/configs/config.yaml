@@ -1,4 +1,0 @@
-defaults:
-  - attributes: happy-100
-  - model: llama2
-  - training_args: llama-adapter

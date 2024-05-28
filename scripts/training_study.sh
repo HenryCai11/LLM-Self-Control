@@ -2,7 +2,7 @@
 cd ..
 
 # no search
-CUDA_VISIBLE_DEVICES=4 python -m self_control.prefix_control.adapter_no_trainer \
+CUDA_VISIBLE_DEVICES=4 python -m self_control.prefix_control.prefix_trainer \
     --training_set_name happy2sad-2k \
     --eval_set_name happy2sad-eval \
     --attribute happy2sad \
@@ -14,7 +14,7 @@ CUDA_VISIBLE_DEVICES=4 python -m self_control.prefix_control.adapter_no_trainer 
     --name_prefix "study-" \
     --pick_by_eval 
 
-CUDA_VISIBLE_DEVICES=4 python -m self_control.prefix_control.adapter_no_trainer \
+CUDA_VISIBLE_DEVICES=4 python -m self_control.prefix_control.prefix_trainer \
     --training_set_name happy2sad-2k \
     --eval_set_name happy2sad-eval \
     --attribute happy2sad \
@@ -33,7 +33,7 @@ size_list=(1000 500 100)
 
 for size in "${size_list[@]}"
 do
-    CUDA_VISIBLE_DEVICES=4 python -m self_control.prefix_control.adapter_no_trainer \
+    CUDA_VISIBLE_DEVICES=4 python -m self_control.prefix_control.prefix_trainer \
         --training_set_name happy2sad-2k-search \
         --eval_set_name happy2sad-eval-search \
         --attribute happy2sad \
@@ -45,7 +45,7 @@ do
         --name_prefix "study-" \
         --pick_by_eval 
 
-    CUDA_VISIBLE_DEVICES=4 python -m self_control.prefix_control.adapter_no_trainer \
+    CUDA_VISIBLE_DEVICES=4 python -m self_control.prefix_control.prefix_trainer \
         --training_set_name happy2sad-2k-search \
         --eval_set_name happy2sad-eval-search \
         --attribute happy2sad \
@@ -60,7 +60,7 @@ do
 done
 
 # search & filter by suffix score
-CUDA_VISIBLE_DEVICES=4 python -m self_control.prefix_control.adapter_no_trainer \
+CUDA_VISIBLE_DEVICES=4 python -m self_control.prefix_control.prefix_trainer \
     --training_set_name happy2sad-2k-search-filtered \
     --eval_set_name happy2sad-eval-search \
     --attribute happy2sad \
@@ -72,7 +72,7 @@ CUDA_VISIBLE_DEVICES=4 python -m self_control.prefix_control.adapter_no_trainer 
     --name_prefix "study-"
     # --pick_by_eval 
 
-# CUDA_VISIBLE_DEVICES=4 python -m self_control.prefix_control.adapter_no_trainer \
+# CUDA_VISIBLE_DEVICES=4 python -m self_control.prefix_control.prefix_trainer \
 #     --training_set_name happy2sad-2k-search-filtered \
 #     --eval_set_name happy2sad-eval-search \
 #     --attribute happy2sad \

@@ -5,31 +5,6 @@ from googleapiclient import discovery
 from typing import Optional, Dict, List
 import time
 
-emotion_eval_model = RobertaForSequenceClassification.from_pretrained("/home/models/twitter-roberta-base-sentiment-latest/")
-emotion_tokenizer = AutoTokenizer.from_pretrained("/home/models/twitter-roberta-base-sentiment-latest/")
-
-def preprocess(text):
-    new_text = []
-    for t in text.split(" "):
-        t = '@user' if t.startswith('@') and len(t) > 1 else t
-        t = 'http' if t.startswith('http') else t
-        new_text.append(t)
-    return " ".join(new_text)
-
-def test_emotion(input_text, emotion_eval_model=emotion_eval_model, emotion_tokenizer=emotion_tokenizer):
-    verbalization = {
-        0: "negative",
-        1: "neutral",
-        2: "positive"
-    }
-    input_text = preprocess(input_text)
-    encoded_input = emotion_tokenizer(input_text, return_tensors='pt')
-    encoded_input["input_ids"] = encoded_input["input_ids"][:, :512]
-    encoded_input["attention_mask"] = encoded_input["attention_mask"][:, :512]
-    output = emotion_eval_model(**encoded_input)
-    scores = output[0][0].detach().numpy()
-    scores = softmax(scores)
-    return verbalization[scores.argmax(axis=-1)], scores
 
 class PerspectiveApiScorer:
     """
@@ -74,10 +49,10 @@ class PerspectiveApiScorer:
             try:
                 response = self._service.comments().analyze(body=analyze_request).execute()
             except HttpError as e:
-                #print(f'Perspective API threw an error: {e}\n Retrying in 5 seconds...')
-                #print(input_text)
                 time.sleep(1)
-                #return None
 
         return {attribute: response['attributeScores'][attribute.upper()]['summaryScore']['value'] for attribute in
                 requested_attributes}
+    
+def get_responses_by_attributes():
+    pass
