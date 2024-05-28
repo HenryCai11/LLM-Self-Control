@@ -100,6 +100,13 @@ CUDA_VISIBLE_DEVICES=0 python -m self_control.prefix_control.prefix_trainer \
     --norm_threshold 0.5 \
     --pick_by_eval
 ```
+### Evaluation
+python -m self_control.suffix_gradient.check_suffix_score \
+    --attribute angry \
+    --threshold 2.5 \
+    --file_path angry2peaceful-final.jsonl
+    --suffix_score_direction 'negative' \
+    --model "llama2"
 
 ## Acknowledgement
 
