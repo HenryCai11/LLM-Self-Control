@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 def get_args():
     parser = argparse.ArgumentParser()
-
+    parser.add_argument("--random_seed", type=int, default=42)
     parser.add_argument("--output_dir", type=str, default="./results")
     parser.add_argument("--model_name_or_path", type=str, default="meta-llama/Llama-2-7b-chat-hf")
     parser.add_argument("--data_path", type=str, default="/home/cmin/LLM-Interpretation-Playground/benchmarks/malicious_instruct/Jailbreak_LLM-main/data/MaliciousInstruct.txt")
@@ -20,7 +20,9 @@ def get_args():
     parser.add_argument("--shuffle", type=bool, default=True)
     parser.add_argument("--eval_step", type=int, default=10)
     parser.add_argument("--epoch", type=int, default=5)
-    parser.add_argument("--max_steps", type=int, help="Max Steps")
+    parser.add_argument("--max_epochs", type=int, help="Max Epochs")
+    parser.add_argument("--warmup", type=float, default=0.4, help="Ratio of total steps for warm-up")
+
 
     parser.add_argument("--searching", action="store_true", help="If `searching=True` then do searching")
     parser.add_argument("--do_test", action="store_true", help="If `do_train=False` then only do test")

@@ -53,6 +53,3 @@ class PerspectiveApiScorer:
 
         return {attribute: response['attributeScores'][attribute.upper()]['summaryScore']['value'] for attribute in
                 requested_attributes}
-    
-def get_responses_by_attributes():
-    pass

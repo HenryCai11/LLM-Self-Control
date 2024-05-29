@@ -30,7 +30,7 @@ import wandb
 import json
 from self_control.utils.eval_utils import PerspectiveApiScorer
 from self_control.utils.utils import greedy_decode
-from self_control.suffix_gradient.scorer import GPTScorer
+from self_control.utils.scorer import GPTScorer
 import torch.nn as nn
 from transformers import LlamaForCausalLM, MistralForCausalLM
 
@@ -70,7 +70,7 @@ elif args.peft_type == "full":
         bnb_4bit_compute_dtype=torch.float16,
     )
 
-random_seed = 42
+random_seed = args.random_seed
 transformers.set_seed(random_seed)
 random.seed(random_seed)
 np.random.seed(random_seed)
@@ -189,11 +189,11 @@ tokenizer.bos_token_id = 1
 
 # Set up training parameters
 scheduler_type = "warmup-constant"
-max_steps = 50
-warmup = 0.4
+max_epochs = args.max_epochs
+warmup = args.warmup
 batch_size = args.batchsize
 learning_rate = args.lr
-checkpoint_name = f"./adapters/{args.training_set_name}" + args.peft_type + f"-{max_steps}" + f"-{learning_rate}"
+checkpoint_name = f"./adapters/{args.training_set_name}" + args.peft_type + f"-{max_epochs}" + f"-{learning_rate}"
 print(f"Checkpoint name: {checkpoint_name}")
 if args.do_test:
     if args.test_original:
@@ -290,7 +290,7 @@ def compute_loss(model, inputs, target_layers: List, return_outputs=False, **kwa
 
     return (loss, orig_hidden) if return_outputs else loss
 
-# Define a custom evaluation function
+
 def evaluate(model, eval_loader, final_test=False, search=False):
     total_loss = 0
     avg_loss = 0
@@ -300,6 +300,8 @@ def evaluate(model, eval_loader, final_test=False, search=False):
             total_loss += loss.item()
 
         avg_loss = total_loss / len(eval_loader)
+
+    # Inference on test set
     if final_test:
         print("Testing...")
         target_dir = "./generations"
@@ -568,7 +570,6 @@ def evaluate(model, eval_loader, final_test=False, search=False):
                     leak_score += scorer.score(input_str, generated_text, "avalon")
                     pbar.set_description(f"Leak Score: {leak_score/counter}")
                     pbar.update(1)
-                # print(generated_text)
         elif args.attribute == "reasoning":
             input_list = []
             with open("/home/cmin/LLM-Interpretation-Playground/benchmarks/gsm8k/test.jsonl", 'r') as f:
@@ -782,14 +783,14 @@ accumulation_steps = args.accumulation_steps
 wandb.init(project="gradient-control", name=f"{args.name_prefix}{args.training_set_name}-{batch_size*accumulation_steps}-{args.lr}", config={
     "learning_rate": learning_rate,
     "batch_size": batch_size,
-    "max_steps": max_steps,
+    "max_epochs": max_epochs,
     "accumulation_steps": accumulation_steps
 })
 
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=False, collate_fn=collate_fn)
 eval_loader = DataLoader(eval_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
 
-num_warmup_steps = int(max_steps * warmup)
+num_warmup_steps = int(max_epochs * warmup)
 # Set up the optimizer
 optimizer = AdamW(model.parameters(), lr=learning_rate, weight_decay=0)
 if num_warmup_steps == 0:
@@ -804,8 +805,8 @@ elif scheduler_type == "warmup-constant":
 elif scheduler_type == "warmup-linear":
     scheduler = get_polynomial_decay_schedule_with_warmup(
         optimizer,
-        max_steps*warmup,
-        max_steps,
+        max_epochs*warmup,
+        max_epochs,
         learning_rate*0.3
     )
 if not args.do_test:
@@ -815,7 +816,7 @@ if not args.do_test:
     best_loss = float('inf')
     best_epoch = -1
     best_model_path = ''
-    for epoch in range(max_steps):
+    for epoch in range(max_epochs):
         model.train()
         train_loss = 0
         optimizer.zero_grad()
@@ -856,10 +857,10 @@ if not args.do_test:
     print(f"Best loss: {best_loss}, Best epoch: {best_epoch}")
     if not args.pick_by_eval:
         evaluate(model.eval(), eval_loader, final_test=True)
-        push_name = args.push_name + args.peft_type + args.training_set_name + f"-{max_steps}" + f"-{learning_rate}"
+        push_name = args.push_name + args.peft_type + args.training_set_name + f"-{max_epochs}" + f"-{learning_rate}"
         model.push_to_hub(push_name)
 else:
     eval_loss = evaluate(model.eval(), eval_loader, final_test=True)
     if args.name_prefix is not None and not "study" in args.name_prefix:
-        push_name = args.push_name + args.peft_type + args.training_set_name + f"-{max_steps}" + f"-{learning_rate}"
+        push_name = args.push_name + args.peft_type + args.training_set_name + f"-{max_epochs}" + f"-{learning_rate}"
         model.push_to_hub(push_name)
