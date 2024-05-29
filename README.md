@@ -99,9 +99,9 @@ CUDA_VISIBLE_DEVICES=0 python -m self_control.prefix_control.prefix_trainer \
     --training_set_name reasoning-llama \
     --eval_set_name reasoning-llama-eval \
     --attribute reasoning \
-    --batchsize 8 \
+    --batchsize 16 \
     --lr 3e-3 \
-    --accumulation_steps 4 \
+    --accumulation_steps 8 \
     --peft_type "prefix+adapter" \
     --norm_threshold 0.5 \
     --pick_by_eval
@@ -128,7 +128,22 @@ python -m self_control.utils.test_win_rate.py \
     --orig_path 'path-to-orig-response' \
     --target_path 'path-to-target-response'
 ```
-We are also using Prospective API for toxicity.
+#### Evaluation Protocals for Other Attributes
+
+We also use Prospective API for toxicity, and scripts from [cot-decoding](https://github.com/shirley-wu/cot_decoding) for GSM8K.
+
+#### ROC Curve for Suffix Scores
+
+In addition, you can use the `test_results` to draw the ROC curve once you've got the results with the commands below:
+```bash
+python -m self_control.utils.test_results \
+    --attribute angry \
+    --threshold 2.5 \
+    --file_path angry2peaceful-final.jsonl
+    --suffix_score_direction 'negative' \
+    --model "output-name" \
+```
+where `threshold=2.5` means the decision boundary is 2.5.
 
 ### DPO Experiment
 
