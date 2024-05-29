@@ -26,3 +26,8 @@ experiments/suffix_score/*
 experiments/observe_gradients.ipynb
 
 benchmarks/csqa/*
+benchmarks/MATH/*
+benchmarks/fact_editing/*
+benchmarks/llm-attacks-main/*
+benchmarks/malicious_instruct/*
+baselines/*
