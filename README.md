@@ -8,14 +8,12 @@
 ## Installation
 
 ```bash
-git clone
-cd
+git clone git@github.com:HenryCai11/LLM-Control.git
+cd LLM-Control
 pip install -r requirements.txt
 ```
 
 ## Getting Started
-
-### 
 
 ### Suffix Gradient
 
@@ -101,12 +99,44 @@ CUDA_VISIBLE_DEVICES=0 python -m self_control.prefix_control.prefix_trainer \
     --pick_by_eval
 ```
 ### Evaluation
-python -m self_control.suffix_gradient.check_suffix_score \
+
+We offer gpt-based evaluation protocals on emotions and HH-dialogue. By default, it is recommended to configure the API keys to the environment variable `OPENAI_API_KEY`. You can also hard-code them by modifying the corresponding code.
+
+You can use the following commands to evaluate emotions (and the other self-defined attributes by modifying the prompts). This will 
+```bash
+python -m self_control.utils.test_results \
     --attribute angry \
     --threshold 2.5 \
     --file_path angry2peaceful-final.jsonl
     --suffix_score_direction 'negative' \
-    --model "llama2"
+    --model "output-name" \
+    --report_score
+```
+Also, you can the following command to calculate the winrate against the original response:
+```bash
+python -m self_control.utils.test_win_rate.py \
+    --attribute rlhf \
+    --model 'output-name' \
+    --orig_path 'path-to-orig-response' \
+    --target_path 'path-to-target-response'
+```
+For other tasks
+
+### Exploratory Study
+
+Another interesting yet under-explored part of our paper is the exploratory experiments (analysis on suffix gradients). You can play with them in `Analysis/Analysis.ipynb`. You can also try them out in our colab demo.
+
+Here are some examples:
+
+#### Visualizing Suffix Attention
+![attention](https://github.com/HenryCai11/LLM-Control/assets/24936331/cb9d0d35-4424-436e-9526-a5953a4269fc)
+
+
+#### Visualizing Trajectory of Suffix Gradients
+![trajectory](https://github.com/HenryCai11/LLM-Control/assets/24936331/015a4b43-6280-4311-9a9c-c4ea981ee6a0)
+
+#### Visualizing Norm Patterns of Suffix Gradients across Different Tasks
+![norm_sad](https://github.com/HenryCai11/LLM-Control/assets/24936331/8b4cf972-a870-4dbb-8a12-00c1d2f8b6ad)
 
 ## Acknowledgement
 
