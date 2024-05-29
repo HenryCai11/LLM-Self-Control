@@ -51,6 +51,14 @@ output_dict = wrapped_model.controlled_generate(
 )
 print(output_dict["final_responses"])
 ```
+#### Key Arguments
+
+| Argument         | Recommended Value             | Comment                                                                                                                                                                      |
+|------------------|-------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| suffix           | -                             | You can easily define your own suffix using the SuffixItem class. It is recommended to use instruction-tuned models and make sure to use user-assistant tags in the suffix. |
+| coeff            | below 0 and greater than -0.5 | The initial step size                                                                                                                                                        |
+| max_search_steps | >3                            | Number of steps for searching the step size at each iteration                                                                                                                |
+
 
 ### Prefix Controller
 
@@ -120,7 +128,11 @@ python -m self_control.utils.test_win_rate.py \
     --orig_path 'path-to-orig-response' \
     --target_path 'path-to-target-response'
 ```
-For other tasks
+We are also using Prospective API for toxicity.
+
+### DPO Experiment
+
+We demonstrate in our paper that SelfControl can also be used to generate preference pairs for Direct Preference Optimization. For DPO training, we are using code from the [alignment-handbook](https://github.com/huggingface/alignment-handbook). Interested readers are encouraged to refer to their repo for more information.
 
 ### Exploratory Study
 
