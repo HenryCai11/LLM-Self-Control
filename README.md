@@ -122,7 +122,7 @@ python -m self_control.utils.test_results \
 ```
 Also, you can the following command to calculate the winrate against the original response:
 ```bash
-python -m self_control.utils.test_win_rate.py \
+python -m self_control.utils.test_win_rate \
     --attribute rlhf \
     --model 'output-name' \
     --orig_path 'path-to-orig-response' \
@@ -134,7 +134,7 @@ We also use Prospective API for toxicity, and scripts from [cot-decoding](https:
 
 #### ROC Curve for Suffix Scores
 
-In addition, you can use the `test_results` to draw the ROC curve once you've got the results with the commands below:
+In addition, you can use the `test_results` to draw the ROC curves once you've got the results with the commands below:
 ```bash
 python -m self_control.utils.test_results \
     --attribute angry \
