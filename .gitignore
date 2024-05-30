@@ -37,3 +37,11 @@ data/*
 !data/sami-data.jsonl
 !data/dpo-*.*
 !data/README.md
+
+scripts/*
+!scripts/generate_reasoning_mistral.sh
+!scripts/train_reasoning_mistral.sh
+!scripts/generate_helpfulharmless_llama2.sh
+!scripts/generate_helplessharmful_llama2.sh
+!scripts/train_helpfulharmless.sh
+!scripts/README.md

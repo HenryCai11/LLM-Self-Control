@@ -1,1 +1,0 @@
-python test_malicious_instruct.py
