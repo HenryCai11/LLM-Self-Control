@@ -20,6 +20,11 @@ pip install -r requirements.txt
 **Framework of Iterative Control using Suffix Gradients**:
 ![suffix_new](https://github.com/HenryCai11/LLM-Control/assets/24936331/4437412f-c9d2-4365-b0b1-1bf72aaddb46)
 
+
+https://github.com/HenryCai11/LLM-Control/assets/24936331/e595b01b-38de-440b-9294-548a7b14324b
+
+
+
 ```python
 from self_control.suffix_gradient import WrappedModel
 from self_control.utils import SuffixItem
