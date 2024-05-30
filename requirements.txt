@@ -4,8 +4,6 @@ datasets
 einops
 fairscale
 fasttext_langdetect
-fire
-gradio
 numpy
 pandas
 peft

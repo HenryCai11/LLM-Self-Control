@@ -213,7 +213,6 @@ def search_step_size(orig_input: Dict,
 
     if verbose:
         print(f"Input w/ suffix: {input_with_suffix}")
-        print(f"Initial Loss: {loss}")
 
     for i in range(max_iterations):
         test_step_size = current_step_size
@@ -287,7 +286,7 @@ def search_step_size(orig_input: Dict,
             verbose_scores.append(score)
         if verbose:
             print(f"Input w/ suffix: {input_with_suffix}")
-            print(f"Loss: {loss}")
+            print(f"Score: {score}")
 
         del outputs, logits, norms
         
@@ -304,7 +303,7 @@ def search_step_size(orig_input: Dict,
         # If not, scale down the absolute value of the step-size and continue
         current_step_size *= scale_factor
     if verbose:
-        print(f"Best step-size found: {best_step_size}, Loss: {best_loss}")
+        print(f"Best step-size found: {best_step_size}, Score: {best_score}")
     # return best_step_size, best_loss
     return best_step_size, best_score, best_verbose_scores
 
