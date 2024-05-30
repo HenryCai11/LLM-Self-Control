@@ -117,6 +117,16 @@ CUDA_VISIBLE_DEVICES=0 python -m self_control.prefix_control.prefix_trainer \
     --norm_threshold 0.5 \
     --pick_by_eval
 ```
+
+#### Checkpoints
+
+We open-source some of the Prefix Controllers' checkpoints on huggingface:
+| Name                                                   | Comment                        |
+|--------------------------------------------------------|--------------------------------|
+| [HenryCai1129/selfcontrol-prefix-reasoning-mistral](HenryCai1129/selfcontrol-prefix-reasoning-mistral)      | Improving reasoning ability    |
+| [HenryCai1129/selfcontrol-prefix-calm2surprised-mistral](HenryCai1129/selfcontrol-prefix-calm2surprised-mistral) | Control from calm to surprised |
+
+
 ### Evaluation
 
 We offer gpt-based evaluation protocals on emotions and HH-dialogue. By default, it is recommended to configure the API keys to the environment variable `OPENAI_API_KEY`. You can also hard-code them by modifying the corresponding code.
@@ -184,6 +194,10 @@ Here are some examples:
 ## Acknowledgement
 
 The `WrappedModel` class is borrowed from [RepE](https://github.com/andyzoujm/representation-engineering). Thanks for their great work!
+
+## Roadmap
+
+- [ ] Write up a simple document containing all the details for further study based on SelfControl
 
 ## Citation
 
