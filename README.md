@@ -160,7 +160,7 @@ Here's an example for the ROC curve of toxicity:
 
 ### DPO Experiment
 
-We demonstrate in our paper that SelfControl can also be used to generate preference pairs for Direct Preference Optimization. For DPO training, we are using code from the [alignment-handbook](https://github.com/huggingface/alignment-handbook). Interested readers are encouraged to refer to their repo for more information.
+We demonstrate in our paper that SelfControl can also be used to generate preference pairs for Direct Preference Optimization. For DPO training, we are using code from the [alignment-handbook](https://github.com/huggingface/alignment-handbook). Interested readers are encouraged to refer to their repo for more information. For training data and responses from the DPO-tuned models, please refer to [data](https://github.com/HenryCai11/LLM-Control/tree/main/data)
 
 ### Exploratory Study
 
