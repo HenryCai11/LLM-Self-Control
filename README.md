@@ -126,6 +126,7 @@ We open-source some of the Prefix Controllers' checkpoints on huggingface:
 | [HenryCai1129/selfcontrol-prefix-reasoning-mistral](HenryCai1129/selfcontrol-prefix-reasoning-mistral)      | Improving reasoning ability    |
 | [HenryCai1129/selfcontrol-prefix-calm2surprised-mistral](HenryCai1129/selfcontrol-prefix-calm2surprised-mistral) | Control from calm to surprised |
 
+An example notebook of loading and compositing Prefix Controllers is available [here](experiments/composing_prefixes.ipynb).
 
 ### Evaluation
 
