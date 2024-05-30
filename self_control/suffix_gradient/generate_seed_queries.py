@@ -13,7 +13,7 @@ import json
 import argparse
 from typing import List, Tuple
 from openai import OpenAI
-from .prompts import SEED_PROMPT, DATA_GENERATOR_SYS, THEME_PROMPT, PRINCIPLE_PROMPTS
+from ..utils.prompts import SEED_PROMPT, DATA_GENERATOR_SYS, THEME_PROMPT, PRINCIPLE_PROMPTS
 apikey = os.getenv("OPENAI_API_KEY", None)
 if apikey == None:
     raise ValueError("OPENAI_API_KEY not found")

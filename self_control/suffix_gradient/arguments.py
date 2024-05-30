@@ -29,4 +29,6 @@ parser.add_argument("--do_sample", action="store_true")
 parser.add_argument("--temperature", type=float, default=None, help="Temperature")
 parser.add_argument("--max_new_tokens", type=int, default=50, help="Max new tokens")
 parser.add_argument("--return_hiddens", action="store_true")
+parser.add_argument("--sparsity", type=int, default=-1, help="Number of ")
+
 args = parser.parse_args()

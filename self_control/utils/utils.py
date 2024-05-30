@@ -18,9 +18,9 @@ import random
 def get_suffix_grads_from_wrapped_model(wrapped_model,
                                             tokenizer,
                                             inputs: str,
-                                            loss_fct,
                                             targets,
-                                            verbalizer: List[int],
+                                            contrastive_paris: List[int],
+                                            loss_fct=nn.CrossEntropyLoss(),
                                             smoothing=0,
                                             query_length=None,
                                             norm=1,
@@ -28,14 +28,17 @@ def get_suffix_grads_from_wrapped_model(wrapped_model,
                                             step_size=1,
                                             gradient_manipulation: str="clipping",
                                             binary=False,
+                                            temperature=10,
                                             ):
     """
     Calculate cross entropy loss over a subset of the vocabulary.
 
     Args:
-    - logits (torch.Tensor): The predicted logits from the model.
-    - targets (torch.Tensor): The target labels.
-    - subset_indices (list): List of indices representing the subset of the vocabulary.
+        - tokenizer
+        - inputs
+        - targets
+        - contrastive_paris
+
 
     Returns:
     - torch.Tensor: The cross entropy loss.
@@ -43,10 +46,9 @@ def get_suffix_grads_from_wrapped_model(wrapped_model,
     tokenized = tokenizer(inputs, return_tensors="pt", padding=True)
     tokenized["input_ids"] = tokenized["input_ids"].to(wrapped_model.model.device)
     tokenized["attention_mask"] = tokenized["attention_mask"].to(wrapped_model.model.device)
-    yes_token = tokenizer.encode("Yes", add_special_tokens=False)[0]
-    no_token = tokenizer.encode("No", add_special_tokens=False)[0]
-    assert targets[0] in [yes_token, no_token]
-    look_ahead_counter = 0
+    pos_token = tokenizer.encode(contrastive_paris[0], add_special_tokens=False)[0]
+    neg_token = tokenizer.encode(contrastive_paris[1], add_special_tokens=False)[0]
+    assert targets[0] in [pos_token, neg_token]
     with torch.enable_grad():
         outputs = wrapped_model(
             input_ids=tokenized["input_ids"],
@@ -60,10 +62,11 @@ def get_suffix_grads_from_wrapped_model(wrapped_model,
             loss = loss_fct(outputs.logits[:, -1, :], one_hot_dist.to(wrapped_model.model.device))
         elif binary:
             # only consider that all the targets are the same for now
-            if targets[0] == yes_token:
-                loss = torch.sum(-1 / (1 + torch.exp(-(outputs.logits[:, -1, yes_token] / 10 - outputs.logits[:, -1, no_token] / 10))))
-            elif targets[0] == no_token:
-                loss = torch.sum(-1 / (1 + torch.exp(-(outputs.logits[:, -1, no_token] / 10 - outputs.logits[:, -1, yes_token] / 10))))
+            # TODO: think about if this is the best to feed contrastive pairs
+            if targets[0] == pos_token:
+                loss = torch.sum(-1 / (1 + torch.exp(-(outputs.logits[:, -1, pos_token] / temperature - outputs.logits[:, -1, neg_token] / temperature))))
+            elif targets[0] == neg_token:
+                loss = torch.sum(-1 / (1 + torch.exp(-(outputs.logits[:, -1, neg_token] / temperature - outputs.logits[:, -1, pos_token] / temperature))))
             else:
                 raise ValueError(f"Unknown {targets[0]}")
 
@@ -117,51 +120,15 @@ def get_suffix_grads_from_wrapped_model(wrapped_model,
 
         
         ret_prob_list = []
-        if targets[0] == yes_token:
-            ret_probs = 1 / (1 + torch.exp(-(outputs.logits[:, -1, yes_token] / 10 - outputs.logits[:, -1, no_token] / 10))).detach().cpu().numpy()
-        elif targets[0] == no_token:
-            ret_probs = 1 / (1 + torch.exp(-(outputs.logits[:, -1, no_token] / 10 - outputs.logits[:, -1, yes_token] / 10))).detach().cpu().numpy()
+        if targets[0] == pos_token:
+            ret_probs = 1 / (1 + torch.exp(-(outputs.logits[:, -1, pos_token] / temperature - outputs.logits[:, -1, neg_token] / temperature))).detach().cpu().numpy()
+        elif targets[0] == neg_token:
+            ret_probs = 1 / (1 + torch.exp(-(outputs.logits[:, -1, neg_token] / temperature - outputs.logits[:, -1, pos_token] / temperature))).detach().cpu().numpy()
         ret_prob_list.append(float(ret_probs))
         logits = outputs.logits
 
     return grads, outputs, loss, ret_prob_list, logits, norms, orig_norm
 
-def get_verbalized_grads(model, tokenizer, inputs: str, loss_fct, targets, verbalizer: List[int]):
-    """
-    Calculate cross entropy loss over a subset of the vocabulary.
-
-    Args:
-    - logits (torch.Tensor): The predicted logits from the model.
-    - targets (torch.Tensor): The target labels.
-    - subset_indices (list): List of indices representing the subset of the vocabulary.
-
-    Returns:
-    - torch.Tensor: The cross entropy loss.
-    """
-    tokenized = tokenizer(inputs, return_tensors="pt", padding=True)
-    tokenized["input_ids"] = tokenized["input_ids"].to(model.model.device)
-    tokenized["attention_mask"] = tokenized["attention_mask"].to(model.model.device)
-    outputs = model(
-        input_ids=tokenized["input_ids"],
-        attention_mask=tokenized["attention_mask"],
-        output_hidden_states=True,
-    )
-    loss = loss_fct(outputs.logits[:, -1, :], targets)
-
-    grads = {}
-    norms = {}
-    hidden_states = outputs.hidden_states[1:] # outputs.hidden_states[0] is the embedding layer
-    for i in range(len(hidden_states)):
-        grads[i] = torch.autograd.grad(loss, hidden_states[i], retain_graph=True, allow_unused=True)[0]
-        norms[i] = torch.norm(grads[i], dim=-1, keepdim=True)
-        norm_mask = norms[i] <= 1
-        norms[i][norm_mask] = 1
-        grads[i] = grads[i] / norms[i]
-
-    probs = softmax(outputs.logits[:, -1, verbalizer].detach().cpu().numpy()[0])
-    logits = outputs.logits
-
-    return grads, hidden_states, loss, probs, logits, norms
 
 def control_on_layers(layer_ids, wrapped_model, grads, query_length, token_pos="start"):
     """
@@ -193,58 +160,6 @@ def control_on_layers(layer_ids, wrapped_model, grads, query_length, token_pos="
 
     return wrapped_model
 
-
-def vanilla_control(model: AutoModelForCausalLM,
-                    tokenizer: AutoTokenizer,
-                    wrapped_model,
-                    inputs: str,
-                    target: torch.Tensor,
-                    query_length: int,
-                    verbalizer: List[int],
-                    acc_grads: Dict,
-                    loss_fct: torch.nn.CrossEntropyLoss,
-                    coeff: float=0.05,
-                    **kwargs):
-    """
-    Control with a single suffix
-
-    Args:
-        - model: model to be controlled
-        - wrapped_model: wrapped model to be controlled
-        - inputs: input string with suffix
-        - target: target token
-        - query_length: length of the input query
-        - verbalizer: list of target tokens ["Yes", "No"] by default
-        - acc_grads: accumulated gradients
-        - coeff: coefficient for control
-    """
-    wrapped_model.reset()
-    # print(inputs)
-    grads, outputs, loss, probs, logits, norms = get_verbalized_grads(
-        model=model,
-        tokenizer=tokenizer,
-        inputs=inputs,
-        loss_fct=loss_fct,
-        targets=target,
-        verbalizer=verbalizer
-    )
-    for i in grads:
-        if i in acc_grads:
-            min_len = min(acc_grads[i].size(1), grads[i].size(1))
-            acc_grads[i] = acc_grads[i][:, :min_len] + coeff * grads[i][:, :min_len]
-        else:
-            acc_grads[i] = coeff * grads[i]
-
-    token_pos = "start"     # control on input tokens by default
-    layer_ids = list(range(0, 32, 1))   # control on all layers by default
-    wrapped_model = control_on_layers(
-        layer_ids=layer_ids,
-        wrapped_model=wrapped_model,
-        grads=acc_grads,
-        query_length=query_length,
-        token_pos=token_pos,
-    )
-    return wrapped_model, acc_grads, loss, probs
 
 def search_step_size(orig_input: Dict,
                                 wrapped_model,
@@ -281,7 +196,7 @@ def search_step_size(orig_input: Dict,
     tokenizer = control_args.pop("tokenizer")
     loss_fct = control_args.pop("loss_fct")
     target = control_args.pop("target")
-    verbalizer = control_args.pop("verbalizer")
+    contrastive_paris = control_args.pop("contrastive_paris")
 
     input_with_suffix = initial_grads_loss["controlled_output"]
     loss = initial_grads_loss["loss"]
@@ -328,7 +243,7 @@ def search_step_size(orig_input: Dict,
                 target_token = tokenizer.encode(target, add_special_tokens=False, return_tensors='pt').squeeze(0)
                 assert target_token.shape[-1] == 1, "Target should be a single token for now."
                 target_token = (target_token * torch.ones(1).long()).to(wrapped_model.model.device)
-                verbalizer = [target_token[0]]
+                contrastive_paris = [target_token[0]]
                 input_list = [input + suffix_string for input in wrapped_model.generate(**orig_input, do_sample=do_sample, **control_args)]
                 wrapped_model.reset()
                 grads, outputs, loss, probs, logits, norms, orig_norm = get_suffix_grads_from_wrapped_model(
@@ -337,7 +252,7 @@ def search_step_size(orig_input: Dict,
                     inputs=input_list,
                     loss_fct=loss_fct,
                     targets=target_token,
-                    verbalizer=verbalizer,
+                    contrastive_paris=contrastive_paris,
                     smoothing=smoothing,
                     top_k=top_k,
                     query_length=query_length,
@@ -363,7 +278,7 @@ def search_step_size(orig_input: Dict,
                 tokenizer=tokenizer,
                 loss_fct=loss_fct,
                 targets=target,
-                verbalizer=verbalizer,
+                contrastive_paris=contrastive_paris,
                 smoothing=smoothing,
                 top_k=top_k,
                 gradient_manipulation=gradient_manipulation,
@@ -394,19 +309,6 @@ def search_step_size(orig_input: Dict,
     return best_step_size, best_score, best_verbose_scores
 
 
-def KL_divergence(p, q, epsilon=1e-9):
-    """Compuates KL divergence between two probability distributions
-
-    Args:
-        p (torch.tensor): probability distribution
-        q (torch.tensor): probability distribution
-
-    Returns:
-        float: KL divergence
-    """
-    return torch.sum(p * torch.log((p + epsilon) / (q + epsilon)))
-
-
 def label_smoothing(one_hot_labels, smoothing=0.5):
     """
     Applies label smoothing to one-hot labels.
@@ -424,6 +326,9 @@ def label_smoothing(one_hot_labels, smoothing=0.5):
 
 
 def greedy_decode(model, tokenizer, input_ids, max_length=50):
+    """
+    The generation utility for Prefix Controller
+    """
     def token_id_to_embedding(token_id):
         return model.base_model.model.model.embed_tokens(token_id.to(model.device))
     dot_token_ids = [tokenizer.convert_tokens_to_ids(".")]
@@ -465,3 +370,21 @@ def greedy_decode(model, tokenizer, input_ids, max_length=50):
                 gen_ids = gen_ids[:-1]
                 break
     return tokenizer.decode(gen_ids)
+
+
+def get_prefix_input_ids(tokenizer, prompt_type="default") -> torch.Tensor:
+    """
+    Customize your prompt for the Prefix Controller here
+    """
+    if prompt_type == "default":
+        # We concat the prefix and the input in the collate_fn
+        dot_token_ids = [tokenizer.convert_tokens_to_ids(".")]
+        prefix_token_ids = tokenizer.encode("<<SYS>> You are an assistant <</SYS>>", add_special_tokens=False)
+        prefix_input_ids = torch.arange(len(prefix_token_ids + dot_token_ids * 5)).unsqueeze(dim=0)
+        bos_token = torch.tensor([tokenizer.bos_token_id]).unsqueeze(dim=0)
+        prefix_input_ids = torch.cat([bos_token, prefix_input_ids], dim=-1)
+    else:
+        raise ValueError(f"Prompt type {prompt_type} not defined")
+    
+    return prefix_input_ids
+    

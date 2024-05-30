@@ -13,13 +13,10 @@ from torch.utils.data import Dataset
 import argparse
 from datasets import load_dataset
 from transformers import Trainer, TrainingArguments, AutoModelForCausalLM, AutoTokenizer
-from self_control.utils import get_verbalized_grads, control_on_layers, get_sentence_embedding
 from peft import AdaptionPromptConfig, LoraConfig, get_peft_model, PeftModel, prepare_model_for_kbit_training, PeftConfig, load_peft_weights, set_peft_model_state_dict
 from transformers import BitsAndBytesConfig
 from typing import List, Dict
-from self_control.utils import vanilla_control, KL_divergence
 from .arguments import args
-from data.kl_divergence import kl_div_data
 from self_control.utils import SuffixItem
 from transformers.optimization import get_constant_schedule_with_warmup, get_constant_schedule, get_linear_schedule_with_warmup, get_polynomial_decay_schedule_with_warmup
 import pickle
@@ -29,7 +26,7 @@ import numpy as np
 import wandb
 import json
 from self_control.utils.eval_utils import PerspectiveApiScorer
-from self_control.utils.utils import greedy_decode
+from self_control.utils.utils import greedy_decode, get_prefix_input_ids
 from self_control.utils.scorer import GPTScorer
 import torch.nn as nn
 from transformers import LlamaForCausalLM, MistralForCausalLM
@@ -117,7 +114,6 @@ class SuffixControlDataset(Dataset):
         print("Length of data: ", len(data))
         return data
     
-    # def _preprocess()
 
     def count_data_items(self):
         count = 0
@@ -132,7 +128,6 @@ class SuffixControlDataset(Dataset):
         return count
 
     def __len__(self):
-        # return int(self.data_count * (self.proportion[1] - self.proportion[0]))
         return len(self.data)
 
     def __getitem__(self, idx):
@@ -156,14 +151,8 @@ class SuffixControlDataset(Dataset):
         prefix_input_ids = None
         prefix_mask = None
         if args.peft_type == "prefix+adapter":
-            # We concat the prefix and the input in the collate_fn
-            dot_token_ids = [self.tokenizer.convert_tokens_to_ids(".")]
-            prefix_token_ids = self.tokenizer.encode("<<SYS>> You are an assistant <</SYS>>", add_special_tokens=False)
-            # prefix_input_ids = torch.tensor(prefix_token_ids + dot_token_ids * 5).unsqueeze(dim=0)
-            prefix_input_ids = torch.arange(len(prefix_token_ids + dot_token_ids * 5)).unsqueeze(dim=0)
-            bos_token = torch.tensor([self.tokenizer.bos_token_id]).unsqueeze(dim=0)
-            prefix_input_ids = torch.cat([bos_token, prefix_input_ids], dim=-1)
-            # prefix_input_ids = torch.arange(0, 10).unsqueeze(dim=0)
+            prefix_input_ids = get_prefix_input_ids(tokenizer, prompt_type="default")
+
             prefix_mask = torch.ones_like(prefix_input_ids)
             assert prefix_input_ids.shape == prefix_mask.shape
 
@@ -202,11 +191,7 @@ if args.do_test:
         print("Loading adapter")
         model = PeftModel.from_pretrained(model, checkpoint_name)
         if args.peft_type == "prefix+adapter":
-            # # FIXME: fix hard-coded
-            # pass
-            dot_token_ids = [tokenizer.convert_tokens_to_ids(".")]
-            prefix_token_ids = tokenizer.encode("<<SYS>> You are an assistant <</SYS>>", add_special_tokens=False)
-            prefix_token_ids = torch.tensor(prefix_token_ids + dot_token_ids * 5).unsqueeze(dim=0)
+            prefix_token_ids = get_prefix_input_ids(tokenizer, prompt_type="default")
             model.prefix_embedder = nn.Embedding(num_embeddings=prefix_token_ids.size(1), embedding_dim=model.config.hidden_size)
             prefix_embedder_dir = os.path.join(checkpoint_name, "prefix_embedder.pth")
             model.prefix_embedder.load_state_dict(torch.load(prefix_embedder_dir))
@@ -215,12 +200,8 @@ elif args.peft_type != "full":
     model.enable_input_require_grads()
     model = get_peft_model(model, config)
     if args.peft_type == "prefix+adapter":
-        # pass
-        dot_token_ids = [tokenizer.convert_tokens_to_ids(".")]
-        prefix_token_ids = tokenizer.encode("<<SYS>> You are an assistant <</SYS>>", add_special_tokens=False)
-        prefix_token_ids = torch.tensor(prefix_token_ids + dot_token_ids * 5).unsqueeze(dim=0)
-        prefix_token_ids_tensor = torch.tensor(prefix_token_ids)
-        prefix_embeddings = model.base_model.model.model.embed_tokens(prefix_token_ids_tensor.to(model.device)).to('cpu')
+        prefix_token_ids = get_prefix_input_ids(tokenizer, prompt_type="default")
+        prefix_embeddings = model.base_model.model.model.embed_tokens(prefix_token_ids.to(model.device)).to('cpu')
         model.prefix_embedder = nn.Embedding(num_embeddings=prefix_token_ids.size(1), embedding_dim=model.config.hidden_size)
         print(f"Embedder shape: {model.prefix_embedder.weight.shape}")
         print(f"Prefix Embedding shape: {prefix_embeddings.shape}")
@@ -448,14 +429,8 @@ def evaluate(model, eval_loader, final_test=False, search=False):
                     if args.peft_type=="prefix+adapter":
                         inputs = tokenizer(f"{prompt['text']} ", return_tensors="pt", padding=True)
                         inputs = tokenizer(f"{prompt['text']} ", return_tensors="pt", padding=True, add_special_tokens=False)
-                        # pass
-                        dot_token_ids = [tokenizer.convert_tokens_to_ids(".")]
-                        prefix_token_ids = tokenizer.encode("<<SYS>> You are an assistant <</SYS>>", add_special_tokens=False)
-                        prefix_token_ids = torch.tensor(prefix_token_ids + dot_token_ids * 5).unsqueeze(dim=0)
-                        # inputs = tokenizer([input_str], return_tensors="pt", add_special_tokens=False)
-                        bos_token = torch.tensor([tokenizer.bos_token_id]).unsqueeze(dim=0)
-                        prefix_token_ids = torch.cat([bos_token, prefix_token_ids], dim=-1)
-                        assert prefix_token_ids.size(0) == inputs["input_ids"].size(0) == bos_token.size(0)
+                        prefix_token_ids = get_prefix_input_ids(tokenizer, prompt_type="default")
+                        assert prefix_token_ids.size(0) == inputs["input_ids"].size(0)
                         inputs["input_ids"] = torch.cat([prefix_token_ids, inputs["input_ids"]], dim=-1).to(model.device)
                         inputs["attention_mask"] = torch.ones_like(inputs["input_ids"]).to(model.device)
                     else:
@@ -745,14 +720,8 @@ class TestDataset(Dataset):
         if self.add_inst:
             if args.peft_type=="prefix+adapter":
                 inputs = tokenizer(f"{user_tag} {data_item} {assistant_tag} ", return_tensors="pt", padding=True, add_special_tokens=False)
-                # pass
-                dot_token_ids = [tokenizer.convert_tokens_to_ids(".")]
-                prefix_token_ids = tokenizer.encode("<<SYS>> You are an assistant <</SYS>>", add_special_tokens=False)
-                prefix_token_ids = torch.tensor(prefix_token_ids + dot_token_ids * 5).unsqueeze(dim=0)
-                # inputs = tokenizer([input_str], return_tensors="pt", add_special_tokens=False)
-                bos_token = torch.tensor([tokenizer.bos_token_id]).unsqueeze(dim=0)
-                prefix_token_ids = torch.cat([bos_token, prefix_token_ids], dim=-1)
-                assert prefix_token_ids.size(0) == inputs["input_ids"].size(0) == bos_token.size(0)
+                prefix_token_ids = get_prefix_input_ids(tokenizer, prompt_type="default")
+                assert prefix_token_ids.size(0) == inputs["input_ids"].size(0)
                 inputs["input_ids"] = torch.cat([prefix_token_ids, inputs["input_ids"]], dim=-1).to(model.device)
                 inputs["attention_mask"] = torch.ones_like(inputs["input_ids"]).to(model.device)
             else:
