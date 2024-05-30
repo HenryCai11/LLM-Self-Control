@@ -32,4 +32,8 @@ benchmarks/llm-attacks-main/*
 benchmarks/malicious_instruct/*
 baselines/*
 
-data/
+data/*
+!data/self-control-data.jsonl
+!data/sami-data.jsonl
+!data/dpo-*.*
+!data/README.md
