@@ -21,7 +21,10 @@ pip install -r requirements.txt
 ![suffix_new](https://github.com/HenryCai11/LLM-Control/assets/24936331/4437412f-c9d2-4365-b0b1-1bf72aaddb46)
 
 
-https://github.com/HenryCai11/LLM-Control/assets/24936331/e595b01b-38de-440b-9294-548a7b14324b
+
+https://github.com/HenryCai11/LLM-Control/assets/24936331/f7db72b5-5799-4214-8576-7eb180384e51
+
+
 
 
 
@@ -149,6 +152,11 @@ python -m self_control.utils.test_results \
     --model "output-name" \
 ```
 where `threshold=2.5` means the decision boundary is 2.5.
+
+Here's an example for the ROC curve of toxicity:
+
+![roc_curve_toxicity](https://github.com/HenryCai11/LLM-Control/assets/24936331/cca6f60c-856d-4c3f-ad65-7fa895ee2f14)
+
 
 ### DPO Experiment
 
