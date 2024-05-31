@@ -5,6 +5,7 @@ import warnings
 import numpy as np
 from self_control.utils import get_suffix_grads_from_wrapped_model, control_on_layers, label_smoothing, search_step_size
 from self_control.utils.suffix_manager import SuffixItem
+from self_control.utils.utils import display_responses
 from scipy.special import softmax
 from typing import Union, List, Optional, Tuple
 from peft import PeftModel
@@ -641,6 +642,8 @@ class WrappedReadingVecModel(torch.nn.Module):
         for i in range(bsz):
             outputs = self.tokenizer.batch_decode(gen_ids[i], skip_special_tokens=True)
             score_list, verbose_score_list = self.get_suffix_score(outputs, suffix)
+            if verbose:
+                display_responses(outputs, score_list)
             if not return_all:
                 ret_list.append(outputs[np.argmax(score_list)])
                 ret_score_list.append(score_list[np.argmax(score_list)])

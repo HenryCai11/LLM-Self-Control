@@ -387,3 +387,20 @@ def get_prefix_input_ids(tokenizer, prompt_type="default") -> torch.Tensor:
     
     return prefix_input_ids
     
+
+def display_responses(responses, scores):
+    """
+    Displays a formatted list of responses with their scores when verbose is True.
+
+    Args:
+        - responses (List[str]): A list of responses
+        - scores (List[float]): A list of scores for the corresponding responses
+    """
+    print("Testing")
+    # Display header
+    print(f"{'Response':<20} | {'Score':>5}")
+    print("-" * 28)  # Header separator
+    
+    # Display each response and its score
+    for (response, score) in zip(responses, scores):
+        print(f"{response:<20} | {score:5}")
