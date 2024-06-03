@@ -124,8 +124,8 @@ CUDA_VISIBLE_DEVICES=0 python -m self_control.prefix_control.prefix_trainer \
 We open-source some of the Prefix Controllers' checkpoints on huggingface:
 | Name                                                   | Comment                        |
 |--------------------------------------------------------|--------------------------------|
-| [HenryCai1129/selfcontrol-prefix-reasoning-mistral](HenryCai1129/selfcontrol-prefix-reasoning-mistral)      | Improving reasoning ability    |
-| [HenryCai1129/selfcontrol-prefix-calm2surprised-mistral](HenryCai1129/selfcontrol-prefix-calm2surprised-mistral) | Control from calm to surprised |
+| [HenryCai1129/selfcontrol-prefix-reasoning-mistral](https://huggingface.co/HenryCai1129/selfcontrol-prefix-reasoning-mistral)      | Improving reasoning ability    |
+| [HenryCai1129/selfcontrol-prefix-calm2surprised-mistral](https://huggingface.co/HenryCai1129/selfcontrol-prefix-calm2surprised-mistral) | Control from calm to surprised |
 
 An example notebook of loading and compositing Prefix Controllers is available [here](experiments/composing_prefixes.ipynb).
 
