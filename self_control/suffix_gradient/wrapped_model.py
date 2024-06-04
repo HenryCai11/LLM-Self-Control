@@ -816,24 +816,6 @@ class WrappedReadingVecModel(torch.nn.Module):
                 _wrap_block(layer_id, block_name)
         else:
             _wrap_block(layer_ids, block_name)
-
-    def update_kv_cache(self, deltas, layer_ids, prompt):
-        updated_kv = tuple()
-        inputs_embeds = get_sentence_embedding(self.model, self.tokenizer, prompt)
-        for layer in range(len(self.model.model.layers)):
-            if layer in layer_ids and layer != 0:
-                if layer not in deltas:
-                    raise ValueError(f"Layer {layer} not in deltas.")
-                assert inputs_embeds.shape[1] == deltas[layer].shape[1], f"Query length of the input {inputs_embeds.shape[1]} does not match the query length of the deltas {deltas[layer].shape[1]}."
-                self.control_on_layers([layer-1], deltas, query_length=inputs_embeds.shape[1]) # need to control the last layer's hidden states to affect kv cache in this layer
-                single_layer_kv = self.model(inputs_embeds=inputs_embeds, use_cache=True).past_key_values[layer]
-                updated_kv += (single_layer_kv,)
-            else:
-                self.unwrap()
-                single_layer_kv = self.model(inputs_embeds=inputs_embeds, use_cache=True).past_key_values[layer]
-                updated_kv += (single_layer_kv,)
-
-        return updated_kv
             
     def get_activations(self, layer_ids, block_name='decoder_block'):
 
