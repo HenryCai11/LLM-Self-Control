@@ -13,6 +13,7 @@ from torch import nn
 from torch.nn import functional as F
 from torch.func import functional_call, vmap
 from transformers import LlamaForCausalLM, MistralForCausalLM
+import plotly.graph_objects as go
 import random
 
 def get_suffix_grads_from_wrapped_model(wrapped_model,
@@ -118,12 +119,18 @@ def get_suffix_grads_from_wrapped_model(wrapped_model,
 
                 grads[i] = grads[i] / (temp_norms + 1e-12)
 
-        
+
+        wrapped_model.reset()
+        cleaned_outputs = wrapped_model(
+            input_ids=tokenized["input_ids"],
+            attention_mask=tokenized["attention_mask"],
+            output_hidden_states=True,
+        )
         ret_prob_list = []
         if targets[0] == pos_token:
-            ret_probs = 1 / (1 + torch.exp(-(outputs.logits[:, -1, pos_token] / temperature - outputs.logits[:, -1, neg_token] / temperature))).detach().cpu().numpy()
+            ret_probs = 1 / (1 + torch.exp(-(cleaned_outputs.logits[:, -1, pos_token] / temperature - cleaned_outputs.logits[:, -1, neg_token] / temperature))).detach().cpu().numpy()
         elif targets[0] == neg_token:
-            ret_probs = 1 / (1 + torch.exp(-(outputs.logits[:, -1, neg_token] / temperature - outputs.logits[:, -1, pos_token] / temperature))).detach().cpu().numpy()
+            ret_probs = 1 / (1 + torch.exp(-(cleaned_outputs.logits[:, -1, neg_token] / temperature - cleaned_outputs.logits[:, -1, pos_token] / temperature))).detach().cpu().numpy()
         ret_prob_list.append(float(ret_probs))
         logits = outputs.logits
 
@@ -169,12 +176,14 @@ def search_step_size(orig_input: Dict,
                                 smoothing=0,
                                 top_k=10,
                                 random_seed=0,
+                                n_branches=6,
                                 initial_step_size: float=0.1,
                                 max_iterations: int=3,
                                 scale_factor: float=2,
                                 initial_grads_loss: Dict=None,
                                 do_sample=False,
                                 verbose=False,
+                                search_threshold: float=0,
                                 gradient_manipulation="clipping",
                                 **control_args
                                 ) -> float:
@@ -198,18 +207,20 @@ def search_step_size(orig_input: Dict,
     target = control_args.pop("target")
     contrastive_paris = control_args.pop("contrastive_paris")
 
+    max_new_tokens = control_args.get("max_new_tokens", 50)
+
     input_with_suffix = initial_grads_loss["controlled_output"]
-    loss = initial_grads_loss["loss"]
     score = initial_grads_loss["score"]
     grads = initial_grads_loss["grads"]
 
     # Initialize variables
-    best_loss = initial_grads_loss["loss"]
     best_score = score
     best_verbose_scores = []
     print(f"Initial Score {best_score}")
     best_step_size = initial_step_size
     current_step_size = initial_step_size
+
+    verbose_output = []
 
     if verbose:
         print(f"Input w/ suffix: {input_with_suffix}")
@@ -243,7 +254,8 @@ def search_step_size(orig_input: Dict,
                 assert target_token.shape[-1] == 1, "Target should be a single token for now."
                 target_token = (target_token * torch.ones(1).long()).to(wrapped_model.model.device)
                 contrastive_paris = [target_token[0]]
-                input_list = [input + suffix_string for input in wrapped_model.generate(**orig_input, do_sample=do_sample, **control_args)]
+                responses = wrapped_model.generate(**orig_input, do_sample=do_sample, **control_args)
+                input_list = [input + suffix_string for input in responses]
                 wrapped_model.reset()
                 grads, outputs, loss, probs, logits, norms, orig_norm = get_suffix_grads_from_wrapped_model(
                     wrapped_model=wrapped_model,
@@ -266,46 +278,47 @@ def search_step_size(orig_input: Dict,
             grads = composed_grads
             del composed_grads
             score = multi_score / len(suffix)
-            print(score)
-            print(verbose_scores)
         else:
-            input_with_suffix = [input + suffix.suffix for input in wrapped_model.generate(**orig_input, do_sample=do_sample, **control_args)]
-            wrapped_model.reset()
-            _, outputs, loss, probs, logits, norms, orig_norm = get_suffix_grads_from_wrapped_model(
-                inputs=input_with_suffix,
-                wrapped_model=wrapped_model,
-                tokenizer=tokenizer,
-                loss_fct=loss_fct,
-                targets=target,
-                contrastive_paris=contrastive_paris,
-                smoothing=smoothing,
-                top_k=top_k,
-                gradient_manipulation=gradient_manipulation,
-            )
-            score = sum(probs)
+            # responses = wrapped_model.generate(**orig_input, do_sample=do_sample, **control_args)
+            # input_with_suffix = [input + suffix.suffix for input in responses]
+            # wrapped_model.reset()
+            responses, score_list = wrapped_model.suffix_decoding(input_ids=orig_input["input_ids"], 
+                                                        attention_mask=orig_input["attention_mask"],
+                                                        n_branches=n_branches,
+                                                        suffix=suffix, 
+                                                        max_new_tokens=max_new_tokens,
+                                                        verbose=verbose,
+                                                        record=False,
+                                                        )
+
+            score = sum(score_list) / len(score_list)
             verbose_scores.append(score)
         if verbose:
             print(f"Input w/ suffix: {input_with_suffix}")
             print(f"Score: {score}")
-
-        del outputs, logits, norms
+        verbose_output.append({
+            "phase": "M-step",
+            "response": responses[0],
+            "score": score,
+            "step_size": test_step_size,
+        })
+        del responses
         
         # adjust this threshold if needed
-        # FIXME: fix hard-coded threshold
-        if score - best_score > 0.01:
+        if score - best_score > search_threshold:
             best_score = score
             best_verbose_scores = verbose_scores
             best_step_size = test_step_size
-            return best_step_size, best_score, best_verbose_scores
+            return best_step_size, best_score, best_verbose_scores, verbose_output, temp_grads
         else:
             pass
     
         # If not, scale down the absolute value of the step-size and continue
         current_step_size *= scale_factor
     if verbose:
-        print(f"Best step-size found: {best_step_size}, Score: {best_score}")
+        print(f"No best step-size found")
     # return best_step_size, best_loss
-    return best_step_size, best_score, best_verbose_scores
+    return 0, best_score, best_verbose_scores, verbose_output, {}
 
 
 def label_smoothing(one_hot_labels, smoothing=0.5):
@@ -404,3 +417,56 @@ def display_responses(responses, scores):
     # Display each response and its score
     for (response, score) in zip(responses, scores):
         print(f"{response:<20} | {score:5}")
+
+
+import textwrap
+
+def draw_gen_trajectory(iteration_data, suffix, output_name="output"):
+    iterations_data = iteration_data
+    suffix_used = suffix.suffix
+
+    # Create a figure
+    fig = go.Figure()
+
+    # Horizontal offset for E-step and M-step
+    offset = 0.1
+
+    # Text wrapping function
+    def wrap_text(text, width=50):
+        return '<br>'.join(textwrap.wrap(text, width))
+
+    # Adding traces for each branch
+    for data in iterations_data:
+        iteration = data['iteration']
+        for branch in data['branches']:
+            position = iteration - offset if branch['phase'] == 'M-step' else iteration + offset
+            response_text = wrap_text(branch['response'])
+            hovertext = f"{response_text}<br><b>Score:</b> {branch['score']}" + \
+                        (f"<br><b>Step-size:</b> {branch['step_size']}" if 'step_size' in branch else "")
+            fig.add_trace(go.Scatter(
+                x=[position], y=[branch['score']],
+                mode='markers+text',
+                text=[' '.join(branch['response'].split()[10:13]) + '...'],
+                hovertext=hovertext,
+                hoverinfo='text',
+                name=f"{branch['phase']} {iteration}",
+                marker=dict(symbol='circle' if branch['phase'] == 'E-step' else 'x', size=12)
+            ))
+
+    # Update layout with a more descriptive title and set figure dimensions
+    fig.update_layout(
+        title=f'Trajectory of Responses and Suffix Scores Over Iterations<br><sup>Suffix: {suffix_used}</sup>',
+        xaxis_title='Iteration',
+        yaxis_title='Suffix Score',
+        hovermode='closest',
+        legend_title="Phase/Iteration",
+        width=1400,  # Adjusted width to fit more content
+        height=600,
+        margin=dict(l=50, r=50, t=100, b=50)
+    )
+
+    # Save the figure as an interactive HTML file
+    fig.write_html(f"{output_name}.html")
+
+    # Show the plot
+    fig.show()

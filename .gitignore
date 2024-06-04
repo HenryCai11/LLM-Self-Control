@@ -45,3 +45,5 @@ scripts/*
 !scripts/generate_helplessharmful_llama2.sh
 !scripts/train_helpfulharmless.sh
 !scripts/README.md
+
+*.html

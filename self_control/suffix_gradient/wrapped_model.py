@@ -168,6 +168,7 @@ class WrappedReadingVecModel(torch.nn.Module):
                             use_cache: bool=False,
                             smoothing: float = 0,
                             search: bool=True,
+                            search_threshold: float=0,
                             verbose: bool=False,
                             gradient_manipulation: str="clipping",
                             return_intermediate: bool=False,
@@ -206,6 +207,7 @@ class WrappedReadingVecModel(torch.nn.Module):
             - use_cache (bool): use cache for generation
             - smoothing (float): the scale factor for label smoothing when using CE for gradient calculation
             - search: (bool): "True" for searching step size at each steps
+            - search_threshold (float): The threshold for accepting a response as the new response
             - verbose (bool): set verbose to "True" to output intermediate steps
             - gradient_manipulation: (str): there two options, i.e., gradient clipping as "clipping" and projected gradient descent as "pgd"
             - return_intermediate (bool): return intermediate responses
@@ -245,6 +247,8 @@ class WrappedReadingVecModel(torch.nn.Module):
         norm_list = []
         global_best_score = 0
         global_best_verbose_scores = []
+        self.iteration_data = []
+        self.temp_iteration_data = {}
 
         # Prepare inputs
         inputs = {}
@@ -264,13 +268,15 @@ class WrappedReadingVecModel(torch.nn.Module):
         else:
             controlled_output = initialization_prompt
         original_output = deepcopy(controlled_output)
-        if n_branches > 1:
-            if prompt is not None:
-                controlled_output, decode_score = self.suffix_decoding(prompt, n_branches=n_branches, suffix=suffix, **kwargs)
-            else:
-                controlled_output, decode_score = self.suffix_decoding(input_ids=inputs["input_ids"], attention_mask=inputs["attention_mask"], 
-                                                            n_branches=n_branches, suffix=suffix, **kwargs)
-            best_score = sum(decode_score)
+        # if prompt is not None:
+        #     controlled_output, decode_score = self.suffix_decoding(prompt, n_branches=n_branches, suffix=suffix, verbose=verbose, **kwargs)
+        # else:
+        controlled_output, decode_score = self.suffix_decoding(input_ids=inputs["input_ids"], attention_mask=inputs["attention_mask"], 
+                                                    n_branches=n_branches, suffix=suffix, verbose=verbose, **kwargs)
+        best_score = sum(decode_score)
+        global_best_score = best_score
+        self.temp_iteration_data["iteration"] = 0
+        self.iteration_data.append(self.temp_iteration_data)
         if verbose:
             print("Coeff: ", orig_coeff)
             print("Original Output:\n", controlled_output)
@@ -284,6 +290,9 @@ class WrappedReadingVecModel(torch.nn.Module):
         previous_output = controlled_output
 
         for iter in range(iterations):
+            self.temp_iteration_data = {}
+            self.temp_iteration_data['iteration'] = iter + 1
+            self.temp_iteration_data["branches"] = []
             verbose_scores_temp = []
             if isinstance(suffix, list):
                 warnings.warn(f"Accepting a list of suffixes has not been tested right now")
@@ -346,13 +355,14 @@ class WrappedReadingVecModel(torch.nn.Module):
                     gradient_manipulation=gradient_manipulation,
                     binary=binary,
                 )
-                score = sum(probs) / len(probs)
-                verbose_scores_temp.append(sum(probs))
-            if iter == 0:
-                print("Iter 0")
-                intermediate_score_single.append(score)
-                intermediate_scores.append(verbose_scores_temp)
-                global_best_score = score
+                # score = sum(probs) / len(probs)
+                # verbose_scores_temp.append(sum(probs))
+            # if iter == 0:
+            #     print("Iter 0")
+            #     intermediate_score_single.append(score)
+            #     intermediate_scores.append(verbose_scores_temp)
+                # if score > global_best_score:
+                #     global_best_score = score
 
             test_grads = {}
             for i in grads:
@@ -361,7 +371,7 @@ class WrappedReadingVecModel(torch.nn.Module):
             norm_list.append(norms)
 
             if search:
-                step_size, best_score, best_verbose_scores = search_step_size(
+                step_size, best_score, best_verbose_scores, verbose_output_m_step, new_grads = search_step_size(
                     orig_input              =   inputs,
                     suffix                  =   suffix,
                     random_seed             =   random_seed,
@@ -371,7 +381,9 @@ class WrappedReadingVecModel(torch.nn.Module):
                     layer_ids               =   layer_ids,
                     verbose                 =   verbose,
                     max_iterations          =   max_search_steps,
+                    n_branches              =   n_branches,
                     scale_factor            =   scale_factor,
+                    search_threshold        =   search_threshold,
                     initial_grads_loss      =   {
                         "grads": grads,
                         "loss": loss,
@@ -384,7 +396,7 @@ class WrappedReadingVecModel(torch.nn.Module):
                     tokenizer               =   self.tokenizer,
                     target                  =   target_token,
                     query_length            =   query_length,
-                    contrastive_paris              =   contrastive_paris,
+                    contrastive_paris       =   contrastive_paris,
                     loss_fct                =   loss_fct,
                     **kwargs
                 )
@@ -408,16 +420,20 @@ class WrappedReadingVecModel(torch.nn.Module):
                     )
                 score = best_score
                 verbose_score = best_verbose_scores
-
+            self.temp_iteration_data["branches"] += verbose_output_m_step
+            self.iteration_data.append(self.temp_iteration_data)
+            if coeff == 0:
+                break
             if gradient_manipulation == "pgd":  # If pgd then it's already controlled with the step size
                 coeff = 1
             for i in test_grads:
                 assert torch.equal(test_grads[i], grads[i])
-            for i in grads:
-                if i in acc_grads:
-                    acc_grads[i] = acc_grads[i][:, :query_length] + coeff * grads[i][:, :query_length]
-                else:
-                    acc_grads[i] = coeff * grads[i][:, :query_length]
+            acc_grads = new_grads
+            # for i in grads:
+            #     if i in acc_grads:
+            #         acc_grads[i] = acc_grads[i][:, :query_length] + coeff * grads[i][:, :query_length]
+            #     else:
+            #         acc_grads[i] = coeff * grads[i][:, :query_length]
             if return_all_grads:
                 temp_grads = {}
                 for i in acc_grads:
@@ -431,17 +447,13 @@ class WrappedReadingVecModel(torch.nn.Module):
                 query_length=query_length,
                 token_pos=token_pos,
                 )
-            if n_branches > 1:
-                if prompt is not None:
-                    controlled_output, decode_score = self.suffix_decoding(prompt, n_branches=n_branches, suffix=suffix, verbose=verbose, **kwargs)
-                else:
-                    controlled_output, decode_score = self.suffix_decoding(input_ids=inputs["input_ids"], attention_mask=inputs["attention_mask"], 
-                                                             n_branches=n_branches, suffix=suffix, verbose=verbose, **kwargs)
-                sum_decode_score = sum(decode_score) / len(decode_score)
-                score = sum_decode_score
-            else:
-                controlled_output = self.generate(**inputs, use_cache=use_cache, do_sample=do_sample, **kwargs)
-                print(controlled_output)
+            # if prompt is not None:
+            #     controlled_output, decode_score = self.suffix_decoding(prompt, n_branches=n_branches, suffix=suffix, verbose=verbose, **kwargs)
+            # else:
+            controlled_output, decode_score = self.suffix_decoding(input_ids=inputs["input_ids"], attention_mask=inputs["attention_mask"], 
+                                                            n_branches=n_branches, suffix=suffix, verbose=verbose, **kwargs)
+            sum_decode_score = sum(decode_score) / len(decode_score)
+            score = sum_decode_score
 
             print(f"Score: {score}")
             print(f"Best score: {global_best_score}")
@@ -457,17 +469,13 @@ class WrappedReadingVecModel(torch.nn.Module):
                 break
             if not consistent:
                 self.reset()
-            if verbose:
-                print(f"Score from the iteration {iter}: {score}")
-                print(f"Best step-size from the iteration {iter}: {coeff}")
-                print(f"Output form the iteration {iter}:\n", controlled_output)
-                if isinstance(suffix, list):
-                    verbose_suffix = suffix[0]
-                else:
-                    verbose_suffix = suffix
-                rationale = self.generate([output + verbose_suffix.suffix for output in controlled_output], do_sample=do_sample, **kwargs)
-                print("Rationale:\n", rationale)
-                print("="*50)
+            else:
+                self.control_on_layers(
+                    layer_ids=layer_ids,
+                    grads=acc_grads,
+                    query_length=query_length,
+                    token_pos=token_pos,
+                    )
             
             if controlled_output == previous_output:
                 break
@@ -489,24 +497,26 @@ class WrappedReadingVecModel(torch.nn.Module):
             warnings.warn("Using last_max_new_tokens will lead to unknown behaviors since the suffix score is not comparable to the previous ones")
             kwargs.pop("max_new_tokens")
             if n_branches > 1:
-                if prompt is not None:
-                    controlled_output, decode_score = self.suffix_decoding(prompt, n_branches=n_branches, suffix=suffix, max_new_tokens=last_max_new_tokens, verbose=verbose, **kwargs)
-                else:
-                    controlled_output, decode_score = self.suffix_decoding(input_ids=inputs["input_ids"], 
-                                                              attention_mask=inputs["attention_mask"],
-                                                              n_branches=n_branches,
-                                                              suffix=suffix, 
-                                                              max_new_tokens=last_max_new_tokens,
-                                                              verbose=verbose,
-                                                              **kwargs)
+                # if prompt is not None:
+                #     controlled_output, decode_score = self.suffix_decoding(prompt, n_branches=n_branches, suffix=suffix, max_new_tokens=last_max_new_tokens, verbose=verbose, **kwargs)
+                # else:
+                controlled_output, decode_score = self.suffix_decoding(input_ids=inputs["input_ids"], 
+                                                            attention_mask=inputs["attention_mask"],
+                                                            n_branches=n_branches,
+                                                            suffix=suffix, 
+                                                            max_new_tokens=last_max_new_tokens,
+                                                            verbose=verbose,
+                                                            **kwargs)
             else:
                 controlled_output = self.generate(**inputs, use_cache=use_cache, do_sample=do_sample, return_ids=return_ids, max_new_tokens=last_max_new_tokens, **kwargs) # only pass return_ids here
             final_output_dict["final_response"] = controlled_output
         else:
-            if iterative_outputs == []:
-                final_output_dict["final_response"] = original_output
-            else:
-                final_output_dict["final_response"] = iterative_outputs[-1]
+            # if iterative_outputs == []:
+            #     final_output_dict["final_response"] = original_output
+            # else:
+            #     final_output_dict["final_response"] = iterative_outputs[-1]
+            sorted_data = sorted(self.iteration_data[-1]["branches"], key=lambda x: x['score'], reverse=True)
+            final_output_dict["final_response"] = sorted_data[0]["response"]
         if return_logits:
             outputs = self.model(**inputs, output_hidden_states=True)
             final_output_dict["logits"] = outputs.logits
@@ -522,11 +532,12 @@ class WrappedReadingVecModel(torch.nn.Module):
         if not remain_control:
             self.reset()
         final_output_dict["norms"] = norm_list
-        final_output_dict["prob"] = intermediate_score_single[-1]
-        final_output_dict["orig_prob"] = intermediate_score_single[0]
+        # final_output_dict["prob"] = intermediate_score_single[-1]
+        # final_output_dict["orig_prob"] = intermediate_score_single[0]
         final_output_dict["score_list"] = intermediate_score_single
         final_output_dict["score_list_verbose"] = intermediate_scores
         final_output_dict["verbose_best"] = global_best_verbose_scores
+        final_output_dict["iteration_data"] = self.iteration_data
         return final_output_dict
 
     def get_suffix_score(self,
@@ -608,6 +619,7 @@ class WrappedReadingVecModel(torch.nn.Module):
                         return_all=False,
                         n_branches=3,
                         verbose=False,
+                        record=True,
                         **kwargs):
         if prompt is not None:
             bsz = len(prompt)
@@ -644,6 +656,18 @@ class WrappedReadingVecModel(torch.nn.Module):
             score_list, verbose_score_list = self.get_suffix_score(outputs, suffix)
             if verbose:
                 display_responses(outputs, score_list)
+            if record:
+                temp_branches_data = []
+                for (response, score) in zip(outputs, score_list):
+                    temp_branches_data.append({
+                        'phase': 'E-step',
+                        'response': response,
+                        'score': score
+                    })
+                if "branches" in self.temp_iteration_data:
+                    self.temp_iteration_data["branches"] += temp_branches_data
+                else:
+                    self.temp_iteration_data["branches"] = temp_branches_data
             if not return_all:
                 ret_list.append(outputs[np.argmax(score_list)])
                 ret_score_list.append(score_list[np.argmax(score_list)])
