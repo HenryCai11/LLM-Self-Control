@@ -12,6 +12,8 @@
 
 *We propose SelfControl, a novel method utilizing suffix gradients to control the behavior of large language models (LLMs) without explicit human annotations. Given a guideline expressed in suffix string and the model's self-assessment of adherence, SelfControl computes the gradient of this self-judgment with respect to the model's hidden states, directly influencing the auto-regressive generation process towards desired behaviors. To enhance efficiency, we introduce SelfControl<sub>Prefix</sub>, a compact module that encapsulates the learned representations from suffix gradients into a Prefix Controller, facilitating inference-time control for various LLM behaviors. Our experiments demonstrate SelfControl's efficacy across multiple domains, including emotional modulation, ensuring harmlessness, and enhancing complex reasoning. Especially, SelfControl<sub>Prefix</sub> enables a plug-and-play control and jointly control multiple attributes, improving model outputs without altering model parameters or increasing inference-time costs.*
 
+## Table of Contents
+
 - [Self-Control of LLM Behaviors by Compressing Suffix Gradient into Prefix Controller](#self-control-of-llm-behaviors-by-compressing-suffix-gradient-into-prefix-controller)
   * [Installation](#installation)
   * [Getting Started](#getting-started)
