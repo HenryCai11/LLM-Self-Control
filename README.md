@@ -12,6 +12,30 @@
 
 *We propose SelfControl, a novel method utilizing suffix gradients to control the behavior of large language models (LLMs) without explicit human annotations. Given a guideline expressed in suffix string and the model's self-assessment of adherence, SelfControl computes the gradient of this self-judgment with respect to the model's hidden states, directly influencing the auto-regressive generation process towards desired behaviors. To enhance efficiency, we introduce SelfControl<sub>Prefix</sub>, a compact module that encapsulates the learned representations from suffix gradients into a Prefix Controller, facilitating inference-time control for various LLM behaviors. Our experiments demonstrate SelfControl's efficacy across multiple domains, including emotional modulation, ensuring harmlessness, and enhancing complex reasoning. Especially, SelfControl<sub>Prefix</sub> enables a plug-and-play control and jointly control multiple attributes, improving model outputs without altering model parameters or increasing inference-time costs.*
 
+- [Self-Control of LLM Behaviors by Compressing Suffix Gradient into Prefix Controller](#self-control-of-llm-behaviors-by-compressing-suffix-gradient-into-prefix-controller)
+  * [Installation](#installation)
+  * [Getting Started](#getting-started)
+    + [Suffix Gradient](#suffix-gradient)
+      - [Key Arguments](#key-arguments)
+    + [Prefix Controller](#prefix-controller)
+      - [1. Generate Seed Queries (Optional)](#1-generate-seed-queries-optional)
+      - [2. Generate Target Embeddings](#2-generate-target-embeddings)
+      - [3. Train the Prefix Controller](#3-train-the-prefix-controller)
+      - [Checkpoints](#checkpoints)
+    + [Evaluation](#evaluation)
+      - [Evaluation Protocals for Other Attributes](#evaluation-protocals-for-other-attributes)
+      - [ROC Curve for Suffix Scores](#roc-curve-for-suffix-scores)
+    + [DPO Experiment](#dpo-experiment)
+    + [Exploratory Study](#exploratory-study)
+      - [Visualizing Suffix Attention](#visualizing-suffix-attention)
+      - [Visualizing Trajectory of Suffix Gradients](#visualizing-trajectory-of-suffix-gradients)
+      - [Visualizing Norm Patterns of Suffix Gradients across Different Tasks](#visualizing-norm-patterns-of-suffix-gradients-across-different-tasks)
+  * [Acknowledgement](#acknowledgement)
+  * [Roadmap](#roadmap)
+  * [Citation](#citation)
+
+
+
 ## Installation
 
 ```bash
@@ -219,5 +243,3 @@ The `WrappedModel` class is borrowed from [RepE](https://github.com/andyzoujm/re
       primaryClass={cs.CL}
 }
 ```
-
-## License
