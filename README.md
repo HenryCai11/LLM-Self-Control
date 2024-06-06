@@ -4,6 +4,7 @@
 
 [![Google Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/16KfXG5ETjcabXOPgS-vRxO4mPAAnVJPQ)
 [![Homepage](https://img.shields.io/badge/Home-Access-brightgreen?style=flat)](https://llm-self-control.github.io/)
+[![arXiv](https://img.shields.io/badge/arXiv-2406.02721-B31B1B.svg)](https://arxiv.org/abs/2406.02721)
 
 
 
