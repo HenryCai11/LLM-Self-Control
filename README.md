@@ -205,9 +205,19 @@ The `WrappedModel` class is borrowed from [RepE](https://github.com/andyzoujm/re
 
 ## Roadmap
 
-- [ ] A website demonstrating more examples will be available [here](self-control.github.io)
 - [ ] Write up a simple document containing all the details for further study based on SelfControl
 
 ## Citation
 
-coming soon
+```
+@misc{cai2024selfcontrol,
+      title={Self-Control of LLM Behaviors by Compressing Suffix Gradient into Prefix Controller}, 
+      author={Min Cai and Yuchen Zhang and Shichang Zhang and Fan Yin and Difan Zou and Yisong Yue and Ziniu Hu},
+      year={2024},
+      eprint={2406.02721},
+      archivePrefix={arXiv},
+      primaryClass={cs.CL}
+}
+```
+
+## License
