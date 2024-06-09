@@ -4,7 +4,6 @@ from torch.optim import AdamW
 from tqdm import tqdm
 import sys
 import optuna
-# sys.path.append('../')
 import os
 os.environ['TOKENIZERS_PARALLELISM'] = 'False'
 import gc
@@ -407,7 +406,7 @@ def evaluate(model, eval_loader, final_test=False, search=False):
                         f.write(json.dumps({"generated_text": response}))
                         f.write("\n")
         elif args.attribute == "toxic2nontoxic":
-            api_key = "AIzaSyBjFdzVvNY-QyoxQ_5Otf9R1NwteM15UJs"
+            api_key = os.getenv("PERSPECTIVE_API_KEY")
             scorer = PerspectiveApiScorer(api_key=api_key)
             scorer.start()
             if args.search:

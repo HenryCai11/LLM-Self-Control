@@ -15,26 +15,27 @@
 ## Table of Contents
 
 - [Self-Control of LLM Behaviors by Compressing Suffix Gradient into Prefix Controller](#self-control-of-llm-behaviors-by-compressing-suffix-gradient-into-prefix-controller)
-  * [Installation](#installation)
-  * [Getting Started](#getting-started)
-    + [Suffix Gradient](#suffix-gradient)
+  - [Table of Contents](#table-of-contents)
+  - [Installation](#installation)
+  - [Getting Started](#getting-started)
+    - [Suffix Gradient](#suffix-gradient)
       - [Key Arguments](#key-arguments)
-    + [Prefix Controller](#prefix-controller)
+    - [Prefix Controller](#prefix-controller)
       - [1. Generate Seed Queries (Optional)](#1-generate-seed-queries-optional)
       - [2. Generate Target Embeddings](#2-generate-target-embeddings)
       - [3. Train the Prefix Controller](#3-train-the-prefix-controller)
       - [Checkpoints](#checkpoints)
-    + [Evaluation](#evaluation)
+    - [Evaluation](#evaluation)
       - [Evaluation Protocals for Other Attributes](#evaluation-protocals-for-other-attributes)
       - [ROC Curve for Suffix Scores](#roc-curve-for-suffix-scores)
-    + [DPO Experiment](#dpo-experiment)
-    + [Exploratory Study](#exploratory-study)
+    - [DPO Experiment](#dpo-experiment)
+    - [Exploratory Study](#exploratory-study)
       - [Visualizing Suffix Attention](#visualizing-suffix-attention)
       - [Visualizing Trajectory of Suffix Gradients](#visualizing-trajectory-of-suffix-gradients)
       - [Visualizing Norm Patterns of Suffix Gradients across Different Tasks](#visualizing-norm-patterns-of-suffix-gradients-across-different-tasks)
-  * [Acknowledgement](#acknowledgement)
-  * [Roadmap](#roadmap)
-  * [Citation](#citation)
+  - [Acknowledgement](#acknowledgement)
+  - [Roadmap](#roadmap)
+  - [Citation](#citation)
 
 
 
@@ -185,7 +186,7 @@ python -m self_control.utils.test_win_rate \
 ```
 #### Evaluation Protocals for Other Attributes
 
-We also use Prospective API for toxicity, and scripts from [cot-decoding](https://github.com/shirley-wu/cot_decoding) for GSM8K.
+We also use Prospective API for toxicity, and scripts from [cot-decoding](https://github.com/shirley-wu/cot_decoding) for GSM8K. For Prospective API, please configure the key to the environment variable `PERSPECTIVE_API_KEY`.
 
 #### ROC Curve for Suffix Scores
 

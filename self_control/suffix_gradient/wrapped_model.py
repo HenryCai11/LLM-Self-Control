@@ -253,11 +253,15 @@ class WrappedReadingVecModel(torch.nn.Module):
         # Prepare inputs
         inputs = {}
         if prompt is not None:
+            if isinstance(prompt, list) and len(prompt) > 1:
+                warnings.warn("Do not support batch controlled generation for now")
             inputs = self.tokenizer(prompt, return_tensors="pt", padding=True, add_special_tokens=False)
             inputs["input_ids"] = inputs["input_ids"].to(self.model.device)
             inputs["attention_mask"] = inputs["attention_mask"].to(self.model.device)
             query_length = inputs["input_ids"].size(1)
         else:
+            if input_ids["input_ids"].size(0) > 1:
+                warnings.warn("Do not support batch controlled generation for now")
             inputs["input_ids"] = input_ids
             inputs["attention_mask"] = attention_mask
             query_length = input_ids.size(1) if len(input_ids.shape) == 2 else input_ids.size(0) # size(0) might be the batch size
@@ -275,6 +279,7 @@ class WrappedReadingVecModel(torch.nn.Module):
                                                     n_branches=n_branches, suffix=suffix, verbose=verbose, **kwargs)
         best_score = sum(decode_score)
         global_best_score = best_score
+        intermediate_score_single.append(best_score)
         self.temp_iteration_data["iteration"] = 0
         self.iteration_data.append(self.temp_iteration_data)
         if verbose:
@@ -355,14 +360,6 @@ class WrappedReadingVecModel(torch.nn.Module):
                     gradient_manipulation=gradient_manipulation,
                     binary=binary,
                 )
-                # score = sum(probs) / len(probs)
-                # verbose_scores_temp.append(sum(probs))
-            # if iter == 0:
-            #     print("Iter 0")
-            #     intermediate_score_single.append(score)
-            #     intermediate_scores.append(verbose_scores_temp)
-                # if score > global_best_score:
-                #     global_best_score = score
 
             test_grads = {}
             for i in grads:
@@ -429,11 +426,6 @@ class WrappedReadingVecModel(torch.nn.Module):
             for i in test_grads:
                 assert torch.equal(test_grads[i], grads[i])
             acc_grads = new_grads
-            # for i in grads:
-            #     if i in acc_grads:
-            #         acc_grads[i] = acc_grads[i][:, :query_length] + coeff * grads[i][:, :query_length]
-            #     else:
-            #         acc_grads[i] = coeff * grads[i][:, :query_length]
             if return_all_grads:
                 temp_grads = {}
                 for i in acc_grads:
@@ -447,9 +439,6 @@ class WrappedReadingVecModel(torch.nn.Module):
                 query_length=query_length,
                 token_pos=token_pos,
                 )
-            # if prompt is not None:
-            #     controlled_output, decode_score = self.suffix_decoding(prompt, n_branches=n_branches, suffix=suffix, verbose=verbose, **kwargs)
-            # else:
             controlled_output, decode_score = self.suffix_decoding(input_ids=inputs["input_ids"], attention_mask=inputs["attention_mask"], 
                                                             n_branches=n_branches, suffix=suffix, verbose=verbose, **kwargs)
             sum_decode_score = sum(decode_score) / len(decode_score)
@@ -497,9 +486,6 @@ class WrappedReadingVecModel(torch.nn.Module):
             warnings.warn("Using last_max_new_tokens will lead to unknown behaviors since the suffix score is not comparable to the previous ones")
             kwargs.pop("max_new_tokens")
             if n_branches > 1:
-                # if prompt is not None:
-                #     controlled_output, decode_score = self.suffix_decoding(prompt, n_branches=n_branches, suffix=suffix, max_new_tokens=last_max_new_tokens, verbose=verbose, **kwargs)
-                # else:
                 controlled_output, decode_score = self.suffix_decoding(input_ids=inputs["input_ids"], 
                                                             attention_mask=inputs["attention_mask"],
                                                             n_branches=n_branches,
@@ -511,10 +497,6 @@ class WrappedReadingVecModel(torch.nn.Module):
                 controlled_output = self.generate(**inputs, use_cache=use_cache, do_sample=do_sample, return_ids=return_ids, max_new_tokens=last_max_new_tokens, **kwargs) # only pass return_ids here
             final_output_dict["final_response"] = controlled_output
         else:
-            # if iterative_outputs == []:
-            #     final_output_dict["final_response"] = original_output
-            # else:
-            #     final_output_dict["final_response"] = iterative_outputs[-1]
             sorted_data = sorted(self.iteration_data[-1]["branches"], key=lambda x: x['score'], reverse=True)
             final_output_dict["final_response"] = sorted_data[0]["response"]
         if return_logits:
@@ -532,8 +514,8 @@ class WrappedReadingVecModel(torch.nn.Module):
         if not remain_control:
             self.reset()
         final_output_dict["norms"] = norm_list
-        # final_output_dict["prob"] = intermediate_score_single[-1]
-        # final_output_dict["orig_prob"] = intermediate_score_single[0]
+        final_output_dict["prob"] = intermediate_score_single[-1]
+        final_output_dict["orig_prob"] = intermediate_score_single[0]
         final_output_dict["score_list"] = intermediate_score_single
         final_output_dict["score_list_verbose"] = intermediate_scores
         final_output_dict["verbose_best"] = global_best_verbose_scores
@@ -588,7 +570,6 @@ class WrappedReadingVecModel(torch.nn.Module):
         else:
             targets = self.tokenizer.encode(suffix.target, add_special_tokens=False)
             prompt_list = [prompt_item + suffix.suffix for prompt_item in prompt]
-            # print(prompt_list)
             tokenized = self.tokenizer(prompt_list, return_tensors="pt", padding=True)
             tokenized["input_ids"] = tokenized["input_ids"].to(self.model.device)
             tokenized["attention_mask"] = tokenized["attention_mask"].to(self.model.device)
