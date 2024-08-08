@@ -47,3 +47,5 @@ scripts/*
 !scripts/README.md
 
 *.html
+
+rebuttal/*

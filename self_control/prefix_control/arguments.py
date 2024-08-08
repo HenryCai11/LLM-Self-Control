@@ -15,12 +15,10 @@ def get_args():
     parser.add_argument("--search", type=bool, default=False)
     parser.add_argument("--add_kl", default=False, action="store_true")
     parser.add_argument("--schedule_type", type=str, default="constant", help="Type of scheduler, including `constant`, `linear`, and `cosine`")
-    parser.add_argument("--warmup", type=float, default=0.4, help="Wramup rate")
     parser.add_argument("--lr", type=float, default=0.009, help="Learning rate")
     parser.add_argument("--shuffle", type=bool, default=True)
     parser.add_argument("--eval_step", type=int, default=10)
-    parser.add_argument("--epoch", type=int, default=5)
-    parser.add_argument("--max_epochs", type=int, help="Max Epochs")
+    parser.add_argument("--max_epochs", type=int, default=50, help="Max Epochs")
     parser.add_argument("--warmup", type=float, default=0.4, help="Ratio of total steps for warm-up")
 
 

@@ -342,7 +342,10 @@ def greedy_decode(model, tokenizer, input_ids, max_length=50):
     The generation utility for Prefix Controller
     """
     def token_id_to_embedding(token_id):
-        return model.base_model.model.model.embed_tokens(token_id.to(model.device))
+        if isinstance(model, LlamaForCausalLM) or isinstance(model, MistralForCausalLM):
+            return model.model.embed_tokens(token_id.to(model.device))
+        else:
+            return model.base_model.model.model.embed_tokens(token_id.to(model.device))
     dot_token_ids = [tokenizer.convert_tokens_to_ids(".")]
     prefix_token_ids = tokenizer.encode("<<SYS>> You are an assistant <</SYS>>", add_special_tokens=False)
     # prefix_input_ids = torch.tensor(prefix_token_ids + dot_token_ids * 5).unsqueeze(dim=0)
@@ -352,7 +355,13 @@ def greedy_decode(model, tokenizer, input_ids, max_length=50):
     prefix_mask = torch.ones_like(prefix_input_ids)
     attention_mask = torch.ones_like(input_ids)
 
-    if isinstance(model.base_model.model, LlamaForCausalLM):
+    if isinstance(model, LlamaForCausalLM):
+        input_embeds = torch.cat([model.prefix_embedder(prefix_input_ids).to(model.device), model.model.embed_tokens(input_ids.to(model.device))], dim=1)
+        attention_mask = torch.cat([prefix_mask.to(model.device), attention_mask.to(model.device)], dim=-1)
+    elif isinstance(model, MistralForCausalLM):
+        input_embeds = torch.cat([model.prefix_embedder(prefix_input_ids).to(model.device), model.model.embed_tokens(input_ids.to(model.device))], dim=1)
+        attention_mask = torch.cat([prefix_mask.to(model.device), attention_mask.to(model.device)], dim=-1)
+    elif isinstance(model.base_model.model, LlamaForCausalLM):
         input_embeds = torch.cat([model.prefix_embedder(prefix_input_ids).to(model.device), model.base_model.model.model.embed_tokens(input_ids.to(model.device))], dim=1)
         attention_mask = torch.cat([prefix_mask.to(model.device), attention_mask.to(model.device)], dim=-1)
     elif isinstance(model.base_model.model, MistralForCausalLM):

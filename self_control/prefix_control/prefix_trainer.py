@@ -138,7 +138,7 @@ class SuffixControlDataset(Dataset):
         if len(grads.shape) == 3:
             grads = grads.unsqueeze(dim=1)
 
-        if args.peft_type == "prefix+adapter":
+        if args.peft_type in ["prefix+adapter", "prefix"]:
             inputs = self.tokenizer(input_str, return_tensors="pt", add_special_tokens=False)
             inputs["input_ids"] = inputs["input_ids"]
             inputs["attention_mask"] = inputs["attention_mask"]
@@ -149,7 +149,7 @@ class SuffixControlDataset(Dataset):
 
         prefix_input_ids = None
         prefix_mask = None
-        if args.peft_type == "prefix+adapter":
+        if args.peft_type in ["prefix+adapter", "prefix"]:
             prefix_input_ids = get_prefix_input_ids(tokenizer, prompt_type="default")
 
             prefix_mask = torch.ones_like(prefix_input_ids)
@@ -188,17 +188,22 @@ if args.do_test:
         pass
     else:
         print("Loading adapter")
-        model = PeftModel.from_pretrained(model, checkpoint_name)
         if args.peft_type == "prefix+adapter":
+            model = PeftModel.from_pretrained(model, checkpoint_name)
+            prefix_token_ids = get_prefix_input_ids(tokenizer, prompt_type="default")
+            model.prefix_embedder = nn.Embedding(num_embeddings=prefix_token_ids.size(1), embedding_dim=model.config.hidden_size)
+            prefix_embedder_dir = os.path.join(checkpoint_name, "prefix_embedder.pth")
+            model.prefix_embedder.load_state_dict(torch.load(prefix_embedder_dir))
+        elif args.peft_type == "prefix":
             prefix_token_ids = get_prefix_input_ids(tokenizer, prompt_type="default")
             model.prefix_embedder = nn.Embedding(num_embeddings=prefix_token_ids.size(1), embedding_dim=model.config.hidden_size)
             prefix_embedder_dir = os.path.join(checkpoint_name, "prefix_embedder.pth")
             model.prefix_embedder.load_state_dict(torch.load(prefix_embedder_dir))
     # pass
-elif args.peft_type != "full":
+elif args.peft_type != "full":  # if not doing full fine-tune
     model.enable_input_require_grads()
-    model = get_peft_model(model, config)
     if args.peft_type == "prefix+adapter":
+        model = get_peft_model(model, config)
         prefix_token_ids = get_prefix_input_ids(tokenizer, prompt_type="default")
         prefix_embeddings = model.base_model.model.model.embed_tokens(prefix_token_ids.to(model.device)).to('cpu')
         model.prefix_embedder = nn.Embedding(num_embeddings=prefix_token_ids.size(1), embedding_dim=model.config.hidden_size)
@@ -206,7 +211,20 @@ elif args.peft_type != "full":
         print(f"Prefix Embedding shape: {prefix_embeddings.shape}")
         model.prefix_embedder.weight.data.copy_(prefix_embeddings.squeeze(dim=0))
 
-    model.print_trainable_parameters()
+        model.print_trainable_parameters()
+    elif args.peft_type == "prefix":
+        print(model)
+        for param in model.parameters():
+            param.requires_grad = False
+        prefix_token_ids = get_prefix_input_ids(tokenizer, prompt_type="default")
+        prefix_embeddings = model.model.embed_tokens(prefix_token_ids.to(model.device)).to('cpu')
+        model.prefix_embedder = nn.Embedding(num_embeddings=prefix_token_ids.size(1), embedding_dim=model.config.hidden_size)
+        print(f"Embedder shape: {model.prefix_embedder.weight.shape}")
+        print(f"Prefix Embedding shape: {prefix_embeddings.shape}")
+        model.prefix_embedder.weight.data.copy_(prefix_embeddings.squeeze(dim=0))
+    else:
+        raise ValueError("Unknown peft type")
+
 
 def resize_gradients(batch):
     """
@@ -240,7 +258,7 @@ def compute_loss(model, inputs, target_layers: List, return_outputs=False, **kwa
 
     loss_mask = attention_mask.repeat(len(target_layers), 1, 1)
 
-    if args.peft_type == "prefix+adapter":
+    if args.peft_type in ["prefix+adapter", "prefix"]:
         input_embeds = inputs.get("input_embeds").to(model.device)
         orig_outputs = model(
             inputs_embeds=input_embeds.to(torch.bfloat16),
@@ -263,7 +281,7 @@ def compute_loss(model, inputs, target_layers: List, return_outputs=False, **kwa
     loss_fct = nn.MSELoss()
     loss = loss_fct(target_hidden[loss_mask.bool()], orig_hidden[loss_mask.bool()])
 
-    if args.peft_type == "prefix+adapter":
+    if args.peft_type in ["prefix+adapter", "prefix"]:
         del grads, input_embeds, attention_mask, orig_outputs, orig_hidden, target_hidden
     else:
         del grads, input_ids, attention_mask, orig_outputs, orig_hidden, target_hidden
@@ -425,7 +443,7 @@ def evaluate(model, eval_loader, final_test=False, search=False):
             for data, metrics, task_name in zip([toxic, nontoxic], [toxic_metrics, nontoxic_metrics], ["toxic", "nontoxic"]):
             # for data, metrics, task_name in zip([toxic], [toxic_metrics], ["toxic"]):
                 for prompt in tqdm(data):
-                    if args.peft_type=="prefix+adapter":
+                    if args.peft_type in ["prefix+adapter", "prefix"]:
                         inputs = tokenizer(f"{prompt['text']} ", return_tensors="pt", padding=True)
                         inputs = tokenizer(f"{prompt['text']} ", return_tensors="pt", padding=True, add_special_tokens=False)
                         prefix_token_ids = get_prefix_input_ids(tokenizer, prompt_type="default")
@@ -656,24 +674,36 @@ def collate_fn(batch):
     padded_grads_list = [pad_gradients(grads, max_grad_length) for grads in grads_list]
     padded_grads_list = resize_gradients(padded_grads_list)    
 
-    if args.peft_type == "prefix+adapter":
+    if args.peft_type in ["prefix+adapter", "prefix"]:
         # prefix_embeds = model.prefix_embedder(torch.cat(prefix_input_ids_list, dim=0))
         # print(f"Shape of prefix embeds: {prefix_embeds.shape}")
         # print(f"Shape of embed tokens: {model.base_model.model.model.embed_tokens(input_ids_list[0].to(model.device)).to('cpu').shape}")
         concat_input_ids_list = [torch.cat([prefix_ids, input_ids], dim=1) for prefix_ids, input_ids in zip(prefix_input_ids_list, input_ids_list)]
         concat_attention_mask_list = [torch.cat([prefix_mask, attention_mask], dim=1) for (prefix_mask, attention_mask) in zip(prefix_mask_list, attention_mask_list)]
-        if isinstance(model.base_model.model, LlamaForCausalLM):
-            input_embeds_list = [torch.cat([model.prefix_embedder(prefix_ids), model.base_model.model.model.embed_tokens(input_ids.to(model.device)).to('cpu')], dim=1) for \
-                                 prefix_ids, input_ids in zip(prefix_input_ids_list, input_ids_list)]
-            attention_mask_list = [torch.cat([prefix_mask, attention_mask], dim=-1) for (prefix_mask, attention_mask) in \
-                                   zip(prefix_mask_list, attention_mask_list)]
-        elif isinstance(model.base_model.model, MistralForCausalLM):
-            input_embeds_list = [torch.cat([model.prefix_embedder(prefix_ids), model.base_model.model.model.embed_tokens(input_ids.to(model.device)).to('cpu')], dim=1) for \
-                                 prefix_ids, input_ids in zip(prefix_input_ids_list, input_ids_list)]
-            attention_mask_list = [torch.cat([prefix_mask, attention_mask], dim=-1) for (prefix_mask, attention_mask) in \
-                                   zip(prefix_mask_list, attention_mask_list)]
-        else:
-            raise NotImplementedError(f"{type(model.base_model.model)}")
+        if args.peft_type == "prefix":
+            if isinstance(model, LlamaForCausalLM):
+                input_embeds_list = [torch.cat([model.prefix_embedder(prefix_ids), model.model.embed_tokens(input_ids.to(model.device)).to('cpu')], dim=1) for \
+                                    prefix_ids, input_ids in zip(prefix_input_ids_list, input_ids_list)]
+                attention_mask_list = [torch.cat([prefix_mask, attention_mask], dim=-1) for (prefix_mask, attention_mask) in \
+                                    zip(prefix_mask_list, attention_mask_list)]
+            elif isinstance(model, MistralForCausalLM):
+                input_embeds_list = [torch.cat([model.prefix_embedder(prefix_ids), model.model.embed_tokens(input_ids.to(model.device)).to('cpu')], dim=1) for \
+                                    prefix_ids, input_ids in zip(prefix_input_ids_list, input_ids_list)]
+                attention_mask_list = [torch.cat([prefix_mask, attention_mask], dim=-1) for (prefix_mask, attention_mask) in \
+                                    zip(prefix_mask_list, attention_mask_list)]
+        elif args.peft_type == "prefix+adapter":
+            if isinstance(model.base_model.model, LlamaForCausalLM):
+                input_embeds_list = [torch.cat([model.prefix_embedder(prefix_ids), model.base_model.model.model.embed_tokens(input_ids.to(model.device)).to('cpu')], dim=1) for \
+                                    prefix_ids, input_ids in zip(prefix_input_ids_list, input_ids_list)]
+                attention_mask_list = [torch.cat([prefix_mask, attention_mask], dim=-1) for (prefix_mask, attention_mask) in \
+                                    zip(prefix_mask_list, attention_mask_list)]
+            elif isinstance(model.base_model.model, MistralForCausalLM):
+                input_embeds_list = [torch.cat([model.prefix_embedder(prefix_ids), model.base_model.model.model.embed_tokens(input_ids.to(model.device)).to('cpu')], dim=1) for \
+                                    prefix_ids, input_ids in zip(prefix_input_ids_list, input_ids_list)]
+                attention_mask_list = [torch.cat([prefix_mask, attention_mask], dim=-1) for (prefix_mask, attention_mask) in \
+                                    zip(prefix_mask_list, attention_mask_list)]
+            else:
+                raise NotImplementedError(f"{type(model)}")
         # print(f"Shape of input embed: {input_embeds_list[0].shape}")
         # print(f"Shape of padded embed: {pad_embeds(input_embeds_list[0], 36).shape}")
         max_embeds_length = max(
@@ -717,7 +747,7 @@ class TestDataset(Dataset):
     def __getitem__(self, idx):
         data_item = self.data[idx]
         if self.add_inst:
-            if args.peft_type=="prefix+adapter":
+            if args.peft_type in ["prefix+adapter", "prefix"]:
                 inputs = tokenizer(f"{user_tag} {data_item} {assistant_tag} ", return_tensors="pt", padding=True, add_special_tokens=False)
                 prefix_token_ids = get_prefix_input_ids(tokenizer, prompt_type="default")
                 assert prefix_token_ids.size(0) == inputs["input_ids"].size(0)
@@ -817,7 +847,7 @@ if not args.do_test:
             best_epoch = epoch
             if args.pick_by_eval:
                 model.save_pretrained(checkpoint_name)
-                if args.peft_type == "prefix+adapter":
+                if args.peft_type in ["prefix+adapter", "prefix"]:
                     prefix_embedder_dir = os.path.join(checkpoint_name, "prefix_embedder.pth")
                     torch.save(model.prefix_embedder.state_dict(), prefix_embedder_dir)
         wandb.log({"train_loss": avg_train_loss, "eval_loss": eval_loss, "epoch": epoch})
